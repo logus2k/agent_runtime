@@ -1,0 +1,22 @@
+# agent_runtime — runtime dependencies (Python 3.12; glibc base for valkey-glide).
+# Pinned to match the sibling services (agent_bus / agent_scheduler) where shared.
+
+fastapi==0.121.1          # /health + (later) observability API
+uvicorn==0.49.0           # ASGI server (matches agent_bus/scheduler)
+pydantic==2.13.4          # DSL models + envelope (match agent_bus)
+python-dotenv==1.2.2      # .env loading in dev
+httpx==0.28.1             # agent_server + noted MCP HTTP client
+pyyaml>=6.0               # agent records (data/agents/*.yaml)
+python-socketio[asyncio_client]>=5.11   # WhatsApp bridge /agent delivery
+valkey-glide==2.4.2       # bus transport (used via agent-bus-client[bus]); glibc only
+
+# Bus client — the canonical consumer/producer SDK + envelope. DO NOT vendor.
+# It is a local sibling-repo package; for dev install it editable:
+#     pip install -e '../agent_bus/sdk/python[bus]'
+# Container packaging (build context / wheel for the SDK) is handled at Step 2,
+# when the farm consumer actually imports it. Step 0 only needs FastAPI/uvicorn.
+# agent-bus-client[bus]==0.2.0
+
+# dev/test
+pytest==9.1.1
+pytest-asyncio==1.4.0

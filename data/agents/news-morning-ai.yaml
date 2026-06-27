@@ -1,0 +1,32 @@
+# The News Agent — the first inhabitant of the farm (the vertical slice's target).
+# Runtime DSL v0.1, flat record. Hand-written for now (patron + compiler come later).
+#
+# Fired daily by an agent_scheduler cron job whose event carries { agent: news-morning-ai }
+# to stream:agent-runtime. The farm resolves this record by id and runs it.
+#
+# NOTE: noted__newsapi_search is a FEDERATED user tool (noted-tools), and requires
+# NEWSAPI_KEY provisioned in noted's vault (noted/data/tenants/default/vault/) before
+# it works end-to-end. noted__fetch_url is native/key-free. (See Step 5.)
+version: "0.1"
+id: news-morning-ai
+description: "Morning AI headlines to the ops WhatsApp chat"
+
+trigger:
+  type: schedule
+
+brain:
+  persona: news_curator              # agent_server preset (created in Step 5)
+  llm: { temperature: 0.3, max_tokens: 1024 }
+
+tools:
+  server: noted                      # MCP server key (NOTED_MCP_URL)
+  allow: [noted__newsapi_search, noted__fetch_url]
+  max_rounds: 3
+
+input:
+  template: "Curate the {n} best morning headlines about {topic}."
+  vars: { n: 5, topic: "AI agents" }
+
+delivery:
+  channel: whatsapp
+  target: "351961050313@c.us"

@@ -1,0 +1,32 @@
+services:
+  agent-runtime-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agent_runtime:0.1
+    container_name: agent-runtime-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Reach the bus + sibling services by their service names on the network.
+      VALKEY_HOST: valkey-bus
+    ports:
+      # Health/observability API, localhost-bound (nginx fronts external access).
+      - "127.0.0.1:6817:6817"
+    networks:
+      - logus2k_network
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:6817/health'); sys.exit(0)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# valkey-bus is owned by the agent_bus compose project; we only join the network.
+networks:
+  logus2k_network:
+    external: true

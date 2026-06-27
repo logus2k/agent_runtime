@@ -1,1 +1,4 @@
 .venv_agent_runtime/
+.pytest_cache/
+__pycache__/
+.env
