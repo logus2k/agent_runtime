@@ -17,6 +17,9 @@ from fastapi import FastAPI
 
 from . import __version__
 from .config import settings
+from .farm import Farm
+from .registry import Registry
+from .runner import Runner
 
 logging.basicConfig(
     level=settings.log_level,
@@ -27,11 +30,24 @@ log = logging.getLogger("agent_runtime")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Step 2+: connect BusClient, ensure_group on the farm stream, start the
-    # consumer loop + reaper as background tasks; cancel them on shutdown.
-    log.info("agent_runtime %s starting (farm not yet wired — Step 0 skeleton)", __version__)
-    yield
-    log.info("agent_runtime stopping")
+    # Load the agent records, connect the bus, then start the farm with the runner
+    # as its pipeline handler. The farm owns the consumer loop + reaper; the runner
+    # runs each triggered agent (brain → guardrail → delivery) and emits run events.
+    log.info("agent_runtime %s starting", __version__)
+    registry = Registry(settings.agents_dir)
+    registry.load_all()
+
+    farm = Farm(settings, registry)
+    await farm.connect()
+    runner = Runner(settings, farm.bus)
+    farm.set_handler(runner.run)
+    await farm.start()
+    app.state.farm = farm
+    try:
+        yield
+    finally:
+        log.info("agent_runtime stopping")
+        await farm.stop()
 
 
 app = FastAPI(title="agent_runtime", version=__version__, lifespan=lifespan)

@@ -4,9 +4,9 @@
 # Fired daily by an agent_scheduler cron job whose event carries { agent: news-morning-ai }
 # to stream:agent-runtime. The farm resolves this record by id and runs it.
 #
-# NOTE: noted__newsapi_search is a FEDERATED user tool (noted-tools), and requires
-# NEWSAPI_KEY provisioned in noted's vault (noted/data/tenants/default/vault/) before
-# it works end-to-end. noted__fetch_url is native/key-free. (See Step 5.)
+# Tools come from the DECOUPLED mcp-service (server key "mcp" -> MCP_URL), NOT noted.
+# mcp__newsapi_search + mcp__fetch_url must be added as impls to mcp-service first
+# (newsapi_search needs a NewsAPI key in mcp-service config). See Step 5.
 version: "0.1"
 id: news-morning-ai
 description: "Morning AI headlines to the ops WhatsApp chat"
@@ -19,8 +19,8 @@ brain:
   llm: { temperature: 0.3, max_tokens: 1024 }
 
 tools:
-  server: noted                      # MCP server key (NOTED_MCP_URL)
-  allow: [noted__newsapi_search, noted__fetch_url]
+  server: mcp                        # MCP server key (-> MCP_URL = mcp-service)
+  allow: [mcp__newsapi_search, mcp__fetch_url]
   max_rounds: 3
 
 input:

@@ -60,7 +60,10 @@ class Settings:
 
     # --- Consumer loop tuning ---
     read_count: int = _int("READ_COUNT", 32)
-    read_block_ms: int = _int("READ_BLOCK_MS", 2000)
+    # Poll interval between non-blocking XREADGROUP cycles. We do NOT use a blocking
+    # read: valkey-glide multiplexes one connection, so a BLOCK would starve the
+    # concurrent commands issued by dispatched jobs (matches agent_bus BaseActor).
+    poll_ms: int = _int("POLL_MS", 250)
     reaper_interval_s: int = _int("REAPER_INTERVAL_S", 15)
     reaper_min_idle_ms: int = _int("REAPER_MIN_IDLE_MS", 30000)
 
@@ -74,17 +77,25 @@ class Settings:
     # --- Agent registry ---
     agents_dir: str = _str("AGENTS_DIR", "data/agents")
 
-    # --- Downstream services (reachable by service name on logus2k_network) ---
+    # --- Downstream services ---
     agent_server_url: str = _str("AGENT_SERVER_URL", "http://agent_server:7701")
-    noted_mcp_url: str = _str("NOTED_MCP_URL", "http://noted:8123/mcp/")
-    # noted advertises raw tool names; the client namespaces them as noted__<raw>.
-    mcp_tool_prefix: str = _str("MCP_TOOL_PREFIX", "noted__")
+    # MCP tool host — the DECOUPLED mcp-service (NOT noted). The DSL's tools.server
+    # must equal mcp_server_key; the client derives the <key>__ prefix it advertises
+    # to the LLM and strips before tools/call. mcp-service lives on noted-network, so
+    # agent_runtime's compose must join that network to resolve this name.
+    mcp_server_key: str = _str("MCP_SERVER_KEY", "mcp")
+    mcp_url: str = _str("MCP_URL", "http://mcp-service:8080/mcp/")
     whatsapp_bridge_url: str = _str("WHATSAPP_BRIDGE_URL", "http://whatsapp-bridge:3399")
     whatsapp_agent_name: str = _str("WHATSAPP_AGENT_NAME", "news-agent")
     whatsapp_token: str = _str("WHATSAPP_TOKEN", "")  # secret — env only, never the DSL
 
-    # --- Bus identity ---
+    # --- Bus identity + run-event observability ---
     sender_id: str = _str("SENDER_ID", "agent-runtime")
+    # Run events (agent.thought/tool.exec/tool.result/agent.result/workflow.terminated)
+    # are emitted here, keyed by the trigger's cid — a SEPARATE stream from the farm's
+    # ingress so the farm never re-consumes its own trace.
+    runs_stream_id: str = _str("RUNS_STREAM_ID", "agent-runtime-runs")
+    sid_ttl_s: int = _int("SID_TTL_S", 3600)
 
     # --- Startup resilience (services come up across separate compose projects) ---
     connect_retries: int = _int("CONNECT_RETRIES", 30)
