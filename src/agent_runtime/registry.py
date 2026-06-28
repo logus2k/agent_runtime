@@ -79,6 +79,14 @@ class Registry:
             )
         return rec
 
+    def upsert(self, record: AgentRecord) -> None:
+        """Add or replace a record in the live registry. Used by the admin deploy
+        endpoint so a freshly-pushed agent is runnable on its next trigger without
+        a process restart. The Farm shares this Registry instance, so the change is
+        seen immediately by the next dispatch."""
+        self._records[record.id] = record
+        log.info("registry upsert: %s (now %d agent(s))", record.id, len(self._records))
+
     @property
     def ids(self) -> list[str]:
         return sorted(self._records)

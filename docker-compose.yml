@@ -17,6 +17,12 @@ services:
     ports:
       # Health/observability API, localhost-bound (nginx fronts external access).
       - "127.0.0.1:6817:6817"
+    volumes:
+      # Persist agent records on the host so Patron deploys (admin API writes here)
+      # survive a rebuild — data/ is otherwise baked into the image via COPY and the
+      # container fs is ephemeral. The host dir is the source of truth: the registry
+      # loads from it at boot and the admin API writes to it on deploy.
+      - ./data/agents:/app/data/agents
     networks:
       # logus2k_network: valkey-bus, agent_server, whatsapp-bridge.
       # noted-network: mcp-service (the decoupled tool host).

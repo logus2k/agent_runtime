@@ -113,24 +113,30 @@ async def run_brain(
                 {"role": "tool", "tool_call_id": tc.get("id", ""), "content": result}
             )
 
-    if hit_cap:
-        # The model kept calling tools past the budget. Force one tool-less round so
-        # it must produce a final answer from what it has — never deliver empty.
+    thought, answer = split_think(final)
+    if not answer.strip():
+        # No final answer — either the loop hit the round cap, or the model reasoned
+        # only inside <think> and emitted nothing after it. Force one tool-less round
+        # demanding the answer (and no <think>) so we never deliver empty.
         log.warning(
-            "agent '%s' brain hit max_rounds=%d; forcing a final answer without tools",
-            record.id, max_rounds,
+            "agent '%s' produced no final answer (hit_cap=%s); forcing a tool-less "
+            "final round", record.id, hit_cap,
         )
         msg = await agent_server.chat(
             persona,
             messages + [{"role": "user", "content":
-                         "Stop calling tools. Using the tool results above, produce "
-                         "the final answer now."}],
+                         "Stop calling tools and do NOT use a <think> block. Output "
+                         "ONLY the final answer now, using the tool results above."}],
             tools=None,
             overrides=overrides,
         )
-        final = msg.get("content") or ""
-
-    thought, answer = split_think(final)
+        forced = msg.get("content") or ""
+        t2, a2 = split_think(forced)
+        if t2:
+            thought = f"{thought}\n{t2}".strip() if thought else t2
+        # Prefer the clean answer; fall back to the raw forced text, then to the
+        # reasoning we captured — anything but empty.
+        answer = a2.strip() or forced.strip() or answer
     return BrainResult(
         answer=answer, thought=thought, turns_used=turns, hit_cap=hit_cap, tool_log=tool_log
     )

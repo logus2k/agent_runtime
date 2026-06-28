@@ -16,6 +16,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from . import __version__
+from .admin import router as admin_router
 from .config import settings
 from .farm import Farm
 from .registry import Registry
@@ -43,6 +44,9 @@ async def lifespan(app: FastAPI):
     farm.set_handler(runner.run)
     await farm.start()
     app.state.farm = farm
+    # Shared with the admin API (deploy/reload) so a pushed record is live at once.
+    app.state.registry = registry
+    app.state.agents_dir = settings.agents_dir
     try:
         yield
     finally:
@@ -51,6 +55,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="agent_runtime", version=__version__, lifespan=lifespan)
+app.include_router(admin_router)
 
 
 @app.get("/health")

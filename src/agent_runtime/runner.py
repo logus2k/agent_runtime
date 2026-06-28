@@ -66,6 +66,13 @@ class Runner:
         if brain_res.thought:
             await self._emit(cid, "agent.thought", {"thought": brain_res.thought})
 
+        if not brain_res.answer.strip():
+            # Never deliver an empty message — fail loudly instead.
+            await self._emit(
+                cid, "workflow.terminated", {"reason": "empty_answer"}
+            )
+            raise RuntimeError(f"agent '{record.id}' produced an empty answer (cid={cid})")
+
         gr = apply_guardrails(record.guardrails, brain_res.answer)
         if not gr.ok:
             log.error("guardrail blocked agent '%s' (cid=%s): %s", record.id, cid, gr.reason)

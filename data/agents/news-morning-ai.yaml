@@ -16,7 +16,7 @@ trigger:
 
 brain:
   persona: news_curator              # agent_server preset (created in Step 5)
-  llm: { temperature: 0.3, max_tokens: 1024 }
+  llm: { temperature: 0.3, max_tokens: 16384 }   # room for <think> + the full list
 
 tools:
   server: mcp                        # MCP server key (-> MCP_URL = mcp-service)

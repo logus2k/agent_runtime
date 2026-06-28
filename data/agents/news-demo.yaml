@@ -11,7 +11,9 @@ trigger:
 
 brain:
   persona: news_curator
-  llm: { temperature: 0.3, max_tokens: 1024 }
+  # 16K output budget: the model reasons in <think> then emits the list; 1K
+  # truncated it. The record's llm overrides the preset, so set it here too.
+  llm: { temperature: 0.3, max_tokens: 16384 }
 
 tools:
   server: mcp
