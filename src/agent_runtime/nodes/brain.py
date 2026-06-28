@@ -114,10 +114,22 @@ async def run_brain(
             )
 
     if hit_cap:
+        # The model kept calling tools past the budget. Force one tool-less round so
+        # it must produce a final answer from what it has — never deliver empty.
         log.warning(
-            "agent '%s' brain hit max_rounds=%d without a final answer",
+            "agent '%s' brain hit max_rounds=%d; forcing a final answer without tools",
             record.id, max_rounds,
         )
+        msg = await agent_server.chat(
+            persona,
+            messages + [{"role": "user", "content":
+                         "Stop calling tools. Using the tool results above, produce "
+                         "the final answer now."}],
+            tools=None,
+            overrides=overrides,
+        )
+        final = msg.get("content") or ""
+
     thought, answer = split_think(final)
     return BrainResult(
         answer=answer, thought=thought, turns_used=turns, hit_cap=hit_cap, tool_log=tool_log

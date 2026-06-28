@@ -1,14 +1,15 @@
-"""Step 0 verification: the skeleton serves /health (no live stack needed)."""
+"""Step 0 verification: the /health route returns ok.
 
-from fastapi.testclient import TestClient
+We call the route coroutine directly rather than via TestClient — the app lifespan
+now boots the farm (connects to Valkey), which a pure unit test must not require.
+"""
 
-from agent_runtime.app import app
+import asyncio
+
+from agent_runtime.app import health
 
 
 def test_health_ok():
-    with TestClient(app) as client:
-        resp = client.get("/health")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["status"] == "ok"
-        assert body["service"] == "agent_runtime"
+    body = asyncio.run(health())
+    assert body["status"] == "ok"
+    assert body["service"] == "agent_runtime"

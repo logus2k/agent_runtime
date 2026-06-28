@@ -115,18 +115,36 @@ async def test_full_pipeline_bus_delivery(tmp_path):
         )
 
         result = await _wait_for_result(farm.bus, out_stream, timeout=90)
+        # --- pipeline MECHANICS (what this test proves about agent_runtime) ---
         assert result is not None, "no agent.result delivered to the bus stream"
         output = result.payload.data.get("output", "")
         assert output.strip(), f"empty delivered output: {result.payload.data}"
         print("\n=== DELIVERED OUTPUT ===\n" + output[:600])
 
-        # run events were emitted on the runs stream
         _c, run_envs = await farm.bus.observe(runs_stream, "0", count=100)
         types = [e.header.event_type for e in run_envs]
         assert "tool.exec" in types, f"no tool.exec emitted; got {types}"
         assert "agent.result" in types, f"no agent.result emitted; got {types}"
         assert "workflow.terminated" in types, f"no terminal event; got {types}"
         print("=== RUN EVENTS ===", types)
+
+        # --- tool HEALTH: a tool failure must not masquerade as success ---
+        # (the brain feeds tool errors back to the model, which can still produce a
+        # plausible answer — so check the actual tool.result, don't trust the prose).
+        tool_results = [
+            e.payload.data.get("result", "")
+            for e in run_envs if e.header.event_type == "tool.result"
+        ]
+        failed = [r for r in tool_results if r.startswith("ERROR") or "name resolution" in r]
+        if failed:
+            pytest.skip(
+                "PIPELINE MECHANICS VERIFIED, but the web_search tool itself FAILED — "
+                f"{failed!r}. Likely mcp-service detached from mcp_internal "
+                "(fix: docker network connect mcp_internal mcp-service). "
+                "Real-content assertion skipped because the tool is down."
+            )
+        # tool worked -> the answer reflects real search content
+        assert any(r.strip() for r in tool_results), "web_search returned empty"
     finally:
         for st in (runner_stream, out_stream, runs_stream):
             try:

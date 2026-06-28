@@ -16,10 +16,12 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
-# TODO(Step 2): install the bus SDK — agent-bus-client[bus] (canonical envelope +
-# the glide BusClient consumer/producer). It's a sibling-repo package; wire its
-# build context here (an extra build context or a published wheel) when the farm
-# consumer is implemented. Step 0 only needs FastAPI/uvicorn for /health.
+# The bus SDK (canonical envelope + glide BusClient consumer/producer) comes from
+# the sibling agent_bus repo, supplied as a named build context by docker-compose
+# (additional_contexts.busclient_sdk = ../agent_bus/sdk/python). Its deps
+# (pydantic/socketio/aiohttp/valkey-glide) are already in requirements.txt.
+COPY --from=busclient_sdk . /opt/busclient_sdk
+RUN pip install '/opt/busclient_sdk[bus]'
 
 # Application source (package lives under src/agent_runtime).
 COPY src/ ./src/

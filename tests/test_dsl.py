@@ -26,7 +26,8 @@ def test_news_record_loads_from_repo():
     assert rec.version == "0.1"
     assert rec.brain.persona == "news_curator"
     assert rec.tools is not None
-    assert rec.tools.allow == ["noted__newsapi_search", "noted__fetch_url"]
+    assert rec.tools.server == "mcp"
+    assert rec.tools.allow == ["mcp__newsapi_search", "mcp__fetch_url"]
     assert rec.delivery.channel == "whatsapp"
     assert rec.input.vars["topic"] == "AI agents"
     # omitted optional stages are None, not silently defaulted

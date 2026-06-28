@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      additional_contexts:
+        # The bus SDK lives in the sibling agent_bus repo; supply it to the build.
+        busclient_sdk: ../agent_bus/sdk/python
     image: agent_runtime:0.1
     container_name: agent-runtime-app
     restart: unless-stopped
@@ -15,7 +18,10 @@ services:
       # Health/observability API, localhost-bound (nginx fronts external access).
       - "127.0.0.1:6817:6817"
     networks:
+      # logus2k_network: valkey-bus, agent_server, whatsapp-bridge.
+      # noted-network: mcp-service (the decoupled tool host).
       - logus2k_network
+      - noted-network
     healthcheck:
       test:
         - CMD
@@ -26,7 +32,10 @@ services:
       timeout: 5s
       retries: 5
 
-# valkey-bus is owned by the agent_bus compose project; we only join the network.
+# valkey-bus is owned by the agent_bus compose project; mcp-service by the mcp
+# compose. We only join their (external) networks.
 networks:
   logus2k_network:
+    external: true
+  noted-network:
     external: true
