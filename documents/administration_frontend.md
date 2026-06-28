@@ -70,6 +70,39 @@ Design intent: it **complements** Patron (it may deep-link "Edit in Patron"), an
 
 ## 4. Capabilities (the specification)
 
+### 4.0 Identity & naming — `uid` + `name` (foundational)
+
+**Decided.** An agent's identity is a **stable, server-assigned `uid`** (immutable for the
+life of the record); its human label is a **mutable `name`**. This is what makes
+rename-in-place possible — the scheduler's "id is immutable, rename = recreate" rule does
+**not** apply to agents.
+
+- **`uid`** — authoritative identity and **routing key**. Server-generated on first create
+  (e.g. `agt_<short-random>`), never changes, never reused. Everything that points at an
+  agent points at the `uid`.
+- **`name`** — friendly, editable, shown in every UI. Renaming updates the same record.
+  Uniqueness is a nicety, not identity (the `uid` disambiguates).
+- **The friendly name is propagated for display** — denormalised *alongside* the `uid`
+  wherever an agent is referenced, so each frontend can label things without a
+  cross-service lookup. The **agent record is authoritative** for the current name; a
+  carried name is a **snapshot** and may go stale after a rename. Frontends that must show
+  the live name resolve `uid → name` from agent_runtime; the carried name is a
+  convenience/fallback label.
+
+**Cross-service ripple (this is a contract change, not UI-only):**
+
+| Place | Carries | Role |
+| --- | --- | --- |
+| Agent record | `uid` (immutable) + `name` (editable) | source of truth |
+| Scheduler job `event_data` | `agent_uid` (routing) + `agent_name` (display snapshot) | farm resolves by `agent_uid` |
+| Patron graph | the deployed `uid` + `name` | re-deploy sends the `uid` → **updates the same record**, never a duplicate |
+| Run events (`agent-runtime-runs`) | `agent_uid` + `agent_name` | observability labels |
+
+**Migration:** trivial at this scale. There are only a couple of hand-written records
+(`news-demo`, `news-morning-ai`) and a job or two. Assign each record a `uid` (a UUIDv4),
+keep its `name`, and update the handful of referencing jobs/graphs in one pass. No
+backward-compatibility window — there is nothing to phase out.
+
 ### 4.1 Record management (CRUD)
 
 - **List** all agent records as a table with at-a-glance columns: `id`, `description`,
@@ -77,11 +110,13 @@ Design intent: it **complements** Patron (it may deep-link "Edit in Patron"), an
   `delivery.channel` → `target`, and a **link status** badge (see §4.3).
 - **Inspect** one record: the full materialised DSL (read-only), plus a "raw YAML" view.
 - **Create** a record via a form mapped to the DSL (§4.4), or by pasting/​uploading YAML/JSON.
-- **Edit** an existing record in the same form, pre-filled. `id` is **read-only**
-  (immutable identity — rename = create-new + delete-old, matching the scheduler's
-  job-id rule).
-- **Delete** a record, with a typed confirmation and an explicit warning if a scheduler
-  job still targets it (§4.3). Requires the new `DELETE` endpoint (§5).
+- **Edit** an existing record in the same form, pre-filled. `uid` is **read-only**
+  (immutable identity); **`name` is editable in place** — a rename updates the same
+  record (§4.0), it does not create a new one.
+- **Delete** a record — **hard-delete**: the record is removed permanently (file + live
+  registry). Gated by a typed confirmation and an explicit warning if a scheduler job
+  still targets its `uid` (§4.3). Reversible *disabling* is a **separate** future feature,
+  not part of Delete. Requires the new `DELETE` endpoint (§5).
 - **Validate (dry-run)** a candidate record and show structured errors **before**
   committing — the same `extra="forbid"` + field validators the loader applies at boot.
 - **Reload from disk** (authoritative reset) with a clear note that it drops
@@ -95,8 +130,8 @@ Design intent: it **complements** Patron (it may deep-link "Edit in Patron"), an
 - **Destructive ops confirm.** Delete and overwrite require explicit confirmation.
 - **Validation is loud and pre-commit.** Errors surface field-by-field, never as a wall
   of stack trace, and never *after* an unintended write.
-- **`id` immutability** is enforced in the UI (read-only) and already by the API
-  (`path id != record id` → `400`).
+- **Identity (`uid`) is immutable** and enforced read-only in the UI; the **`name` is
+  editable in place** (§4.0). The routing key is always the `uid`, never the name.
 
 ### 4.3 The job↔agent seam (cross-reference)
 
@@ -104,10 +139,11 @@ Read the Scheduler Agent API (`GET http://agent-scheduler-app:6816/jobs`) and th
 registry, then render the linkage so creation mistakes are caught **at author time, not
 fire time**:
 
-- Per **agent**: list scheduler jobs whose `event_data.agent == id` (with trigger +
+- Per **agent**: list scheduler jobs whose `event_data.agent_uid == uid` (with trigger +
   next-run). Badge **"orphan"** if none → the record will never be triggered.
 - Per **agent**: badge **"dangling job"** surfaced on the *job* side — a job whose
-  `event_data.agent` resolves to no record (the farm would silently drop it).
+  `event_data.agent_uid` resolves to no record (the farm would silently drop it). The
+  job's carried `agent_name` helps a human recognise what it *meant* to point at.
 - A top-level **"Consistency" panel**: all dangling jobs and all orphan agents in one
   place. This is the single most valuable view for "make creation of jobs and agents work".
 
@@ -117,12 +153,14 @@ fire time**:
 ### 4.4 Record form ↔ DSL field map
 
 The create/edit form is a thin, validated projection of `AgentRecord`
-([dsl.py](../src/agent_runtime/dsl.py)). Required: `version`, `id`, `brain`, `delivery`.
+([dsl.py](../src/agent_runtime/dsl.py)). Required: `version`, `name`, `brain`, `delivery`
+(`uid` is assigned by the server on create).
 
 | Form field | DSL path | Notes / constraints |
 | --- | --- | --- |
 | Version | `version` | `major.minor`; runtime accepts major `0.x` only |
-| Id | `id` | `^[A-Za-z0-9._:-]+$`; immutable on edit |
+| Uid | `uid` | server-assigned, immutable, read-only; the routing key (§4.0) |
+| Name | `name` | human label, editable in place; shown in every UI |
 | Description | `description` | optional |
 | Trigger type | `trigger.type` | `schedule` \| `channel` (default `schedule`) |
 | Persona | `brain.persona` | non-empty agent_server preset name |
@@ -168,15 +206,22 @@ The UI cannot be built on today's API alone. Minimum additions to `admin.py`:
 
 | Method | Route | Purpose | Notes |
 | --- | --- | --- | --- |
-| `DELETE` | `/admin/agents/{id}` | remove a record (file + live registry) | `404` if absent; `204` on success; atomic file unlink + registry drop |
-| `GET` | `/admin/agents?detail=1` | **rich list** (full/summary records, not ids) | avoids N+1 GETs to render a table |
+| `POST` | `/admin/agents` | **create** a record; server assigns + returns the `uid` | `name` need not be unique (§4.0) |
+| `DELETE` | `/admin/agents/{uid}` | remove a record (file + live registry) | `404` if absent; `204` on success; atomic file unlink + registry drop |
+| `GET` | `/admin/agents?detail=1` | **rich list** (full/summary records, not ids) | avoids N+1 GETs to render a table; includes `uid` + `name` |
 | `POST` | `/admin/agents/validate` | **dry-run** validate a candidate record | returns `{ok, errors[]}`; never writes |
-| `GET` | `/admin/runs?agent={id}&limit=N` | recent run events from `agent-runtime-runs` | read the runs stream; supports the observability views |
-| `GET` | `/admin/consistency` | dangling jobs + orphan agents | joins scheduler `/jobs` with the registry server-side (or done client-side) |
+| `GET` | `/admin/runs?agent_uid={uid}&limit=N` | recent run events from `agent-runtime-runs` | read the runs stream; supports the observability views |
+| `GET` | `/admin/consistency` | dangling jobs + orphan agents | join scheduler `/jobs` (by `agent_uid`) with the registry |
 
-Existing endpoints stay as-is. `PUT` should additionally return whether it **created vs
-replaced** (so the UI can warn/diff). The localhost-bound + nginx-gated security model is
-unchanged (§7); if the surface widens, add the `ADMIN_TOKEN` bearer noted in `admin.py`.
+**Keying:** all record routes key on the immutable `uid` (replacing today's `{id}`).
+Create assigns the `uid`; `PUT /admin/agents/{uid}` updates that record (a `name` change
+is just a field update — no new file). `PUT` should report **created vs replaced** so the
+UI can warn/diff. The localhost-bound + nginx-gated security model is unchanged (§7); if
+the surface widens, add the `ADMIN_TOKEN` bearer noted in `admin.py`.
+
+> Storage note: with `uid` as identity, the on-disk filename should be `<uid>.yaml` (not
+> `<name>.yaml`) so a rename never moves the file. The host `data/agents/` bind mount stays
+> the source of truth.
 
 ## 6. Screens (UX outline)
 
@@ -211,19 +256,25 @@ Mirror the Scheduler Agent precedent exactly (consistency + reuse):
   preset name, it does not edit cognition.
 - **Not MCP tool authoring** — tools live in mcp-service; `tools.allow` is referenced and
   shape-checked, not defined here.
+- **Not disable/enable** — a reversible off-switch (pause an agent without deleting it) is
+  a worthwhile but **separate** future feature; this spec's Delete is hard-delete only.
 
 ## 9. Open decisions
 
-1. **Consistency join location:** server-side `/admin/consistency` (one call, but couples
-   the runtime to the scheduler's URL) vs client-side (UI calls both APIs). Leaning
-   client-side to keep the runtime decoupled — the UI already talks to both.
+1. **Consistency join location:** *Leaning client-side* — the UI calls both APIs and joins
+   by `agent_uid`, keeping the runtime decoupled from the scheduler's URL. (Server-side
+   `/admin/consistency` is one call but couples the two services.)
 2. **Runs backing:** read the `agent-runtime-runs` stream live on each request vs a small
-   rolling index keyed by agent/cid. Start with live reads (bounded `limit`), add an index
-   only if needed.
-3. **Delete semantics:** hard-delete only, or soft-disable (a `disabled` flag the farm
-   skips)? A disable flag would let you stop an agent without losing its definition —
-   worth considering alongside the DELETE endpoint.
-4. **Standalone vs merged UI:** ship as its own app, or add an "Agents" section to the
-   Scheduler UI so jobs and agents are managed in one place. The seam (§4.3) is a strong
-   argument for a single combined console; the decoupling principle argues for two.
+   rolling index keyed by `agent_uid`/`cid`. Start with live reads (bounded `limit`), add
+   an index only if needed.
+> **Decided (this thread):**
+> - **Delete** = hard-delete + confirm; reversible *disable* is a separate future feature.
+> - **Identity** = server-assigned immutable `uid` (**UUIDv4**, file `<uid>.yaml`, may be
+>   displayed shortened); `name` editable in place; routing keys on `uid`, `name`
+>   denormalised for display (§4.0).
+> - **Migration** = none needed at this scale — assign uids to the few existing records and
+>   update their references in one pass (no compatibility window).
+> - **Console** = a **separate page** — its own admin frontend served by `agent_runtime`
+>   (§7), **not** merged into the Scheduler UI. The consistency view (§4.3) still
+>   cross-references scheduler jobs read-only; it just lives on its own page.
 </content>
