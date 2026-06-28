@@ -1,8 +1,9 @@
-"""Admin API: deploy (validate + persist + live-upsert), get, list, reload.
+"""Admin API: create (assign uid), update by uid, legacy deploy by name, get, list,
+delete, validate (dry-run), reload.
 
-Builds a bare FastAPI app with just the admin router (no lifespan/bus), so it tests
-the deploy surface offline. The registry instance here is the same object the router
-mutates — exactly the sharing the real app relies on for live upserts.
+Builds a bare FastAPI app with just the admin router (no lifespan/bus), so it tests the
+record-management surface offline. The registry instance here is the same object the
+router mutates — exactly the sharing the real app relies on for live upserts.
 """
 
 from fastapi import FastAPI
@@ -13,7 +14,7 @@ from agent_runtime.registry import Registry
 
 NEWS = {
     "version": "0.1",
-    "id": "news-morning-ai",
+    "name": "news-morning-ai",
     "trigger": {"type": "schedule"},
     "brain": {"persona": "news_curator", "llm": {"temperature": 0.3, "max_tokens": 1024}},
     "tools": {"server": "mcp", "allow": ["mcp__newsapi_search"], "max_rounds": 3},
@@ -32,42 +33,87 @@ def _client(tmp_path):
     return TestClient(app), reg
 
 
-def test_deploy_persists_and_goes_live(tmp_path):
+def test_create_assigns_uid_persists_and_goes_live(tmp_path):
     client, reg = _client(tmp_path)
-    r = client.put("/admin/agents/news-morning-ai", json=NEWS)
-    assert r.status_code == 200, r.text
+    r = client.post("/admin/agents", json=NEWS)
+    assert r.status_code == 201, r.text
     body = r.json()
-    assert body["ok"] and body["id"] == "news-morning-ai" and body["live"]
-    # persisted to <id>.yaml
-    assert (tmp_path / "news-morning-ai.yaml").exists()
-    # live in the shared registry (the Farm would see it on the next dispatch)
-    assert reg.get("news-morning-ai") is not None
-    assert "news-morning-ai" in reg.ids
-    # reloading from disk keeps it (it was actually written, not just in memory)
+    uid = body["uid"]
+    assert body["ok"] and body["created"] and body["name"] == "news-morning-ai"
+    # file is keyed by uid, not name
+    assert (tmp_path / f"{uid}.yaml").exists()
+    assert not (tmp_path / "news-morning-ai.yaml").exists()
+    # live in the shared registry
+    assert reg.get(uid) is not None
+    assert reg.get_by_name("news-morning-ai") is not None
+    # survives a reload from disk
     rr = client.post("/admin/reload")
-    assert rr.status_code == 200 and "news-morning-ai" in rr.json()["agents"]
+    assert rr.status_code == 200 and uid in rr.json()["agents"]
 
 
 def test_get_and_list(tmp_path):
     client, _ = _client(tmp_path)
-    client.put("/admin/agents/news-morning-ai", json=NEWS)
-    assert client.get("/admin/agents").json()["agents"] == ["news-morning-ai"]
-    got = client.get("/admin/agents/news-morning-ai").json()
-    assert got["brain"]["persona"] == "news_curator"
+    uid = client.post("/admin/agents", json=NEWS).json()["uid"]
+    listing = client.get("/admin/agents").json()["agents"]
+    assert len(listing) == 1 and listing[0]["name"] == "news-morning-ai"
+    assert listing[0]["uid"] == uid
+    got = client.get(f"/admin/agents/{uid}").json()
+    assert got["brain"]["persona"] == "news_curator" and got["uid"] == uid
     assert client.get("/admin/agents/nope").status_code == 404
+
+
+def test_update_by_uid_is_in_place(tmp_path):
+    client, reg = _client(tmp_path)
+    uid = client.post("/admin/agents", json=NEWS).json()["uid"]
+    renamed = {**NEWS, "name": "renamed-agent", "uid": uid}
+    r = client.put(f"/admin/agents/{uid}", json=renamed)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["replaced"] and body["uid"] == uid and body["name"] == "renamed-agent"
+    # same uid, same file — a rename does not spawn a second record
+    assert reg.get(uid).name == "renamed-agent"
+    assert len(reg.ids) == 1
+    assert (tmp_path / f"{uid}.yaml").exists()
+
+
+def test_legacy_deploy_by_name_reuses_uid(tmp_path):
+    """A Patron-style PUT by name (body uses legacy `id`) creates once, then updates the
+    same record on re-deploy — no duplicate."""
+    client, reg = _client(tmp_path)
+    legacy = {**NEWS}
+    legacy.pop("name")
+    legacy["id"] = "news-morning-ai"
+    r1 = client.put("/admin/agents/news-morning-ai", json=legacy)
+    assert r1.status_code == 200 and r1.json()["created"]
+    uid = r1.json()["uid"]
+    r2 = client.put("/admin/agents/news-morning-ai", json=legacy)
+    assert r2.status_code == 200 and r2.json()["replaced"]
+    assert r2.json()["uid"] == uid
+    assert len(reg.ids) == 1
+
+
+def test_delete_is_hard(tmp_path):
+    client, reg = _client(tmp_path)
+    uid = client.post("/admin/agents", json=NEWS).json()["uid"]
+    assert client.delete(f"/admin/agents/{uid}").status_code == 204
+    assert reg.get(uid) is None
+    assert not (tmp_path / f"{uid}.yaml").exists()
+    assert client.delete(f"/admin/agents/{uid}").status_code == 404
 
 
 def test_invalid_record_rejected_and_not_written(tmp_path):
     client, _ = _client(tmp_path)
-    bad = dict(NEWS)
-    bad["delivery"] = {"channel": "carrier-pigeon", "target": "x"}  # not a valid channel
-    r = client.put("/admin/agents/news-morning-ai", json=bad)
+    bad = {**NEWS, "delivery": {"channel": "carrier-pigeon", "target": "x"}}
+    r = client.post("/admin/agents", json=bad)
     assert r.status_code == 422
-    assert not (tmp_path / "news-morning-ai.yaml").exists()  # validation precedes the write
+    assert list(tmp_path.glob("*.yaml")) == []  # validation precedes the write
 
 
-def test_id_mismatch_rejected(tmp_path):
+def test_validate_dry_run_never_writes(tmp_path):
     client, _ = _client(tmp_path)
-    r = client.put("/admin/agents/other-id", json=NEWS)
-    assert r.status_code == 400
-    assert not (tmp_path / "other-id.yaml").exists()
+    ok = client.post("/admin/agents/validate", json=NEWS).json()
+    assert ok["ok"] and ok["errors"] == []
+    bad = client.post("/admin/agents/validate",
+                      json={**NEWS, "delivery": {"channel": "nope", "target": "x"}}).json()
+    assert not bad["ok"] and bad["errors"]
+    assert list(tmp_path.glob("*.yaml")) == []  # dry-run wrote nothing

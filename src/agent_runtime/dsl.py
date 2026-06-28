@@ -21,6 +21,7 @@ spec is forward-looking and not modelled yet.
 from __future__ import annotations
 
 import re
+import uuid
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -28,7 +29,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # Supported DSL major version. A record whose major differs is rejected.
 SUPPORTED_MAJOR = 0
 
-_ID_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 # A namespaced tool name: <server>__<tool>, e.g. noted__web_search. The client
 # applies the server prefix; the raw name is sent to MCP tools/call.
 _TOOL_RE = re.compile(r"^[A-Za-z0-9]+__[A-Za-z0-9_]+$")
@@ -129,11 +129,16 @@ class Delivery(_Strict):
 
 
 class AgentRecord(_Strict):
-    """A complete agent definition (flat record form). Required: version, id,
-    brain, delivery. trigger defaults to a schedule trigger."""
+    """A complete agent definition (flat record form). Required: version, uid, name,
+    brain, delivery. trigger defaults to a schedule trigger.
+
+    Identity is the immutable ``uid`` (a UUID, server-assigned on create); ``name`` is a
+    human-friendly label that can change without affecting routing — the routing key is
+    always the uid. See documents/administration_frontend.md §4.0."""
 
     version: str
-    id: str
+    uid: str
+    name: str
     description: Optional[str] = None
     trigger: Trigger = Field(default_factory=Trigger)
     brain: Brain
@@ -144,13 +149,20 @@ class AgentRecord(_Strict):
     memory: Memory = Field(default_factory=Memory)
     delivery: Delivery
 
-    @field_validator("id")
+    @field_validator("uid")
     @classmethod
-    def _id_shape(cls, v: str) -> str:
-        if not _ID_RE.match(v):
-            raise ValueError(
-                f"id '{v}' must match ^[A-Za-z0-9._:-]+$ (no spaces/special chars)"
-            )
+    def _uid_shape(cls, v: str) -> str:
+        try:
+            uuid.UUID(str(v))
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(f"uid '{v}' must be a UUID string") from exc
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def _name_non_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("name must be a non-empty label")
         return v
 
     @field_validator("version")

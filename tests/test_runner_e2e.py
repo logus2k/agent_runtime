@@ -68,7 +68,8 @@ async def test_full_pipeline_bus_delivery(tmp_path):
         textwrap.dedent(
             f"""
             version: "0.1"
-            id: news-e2e
+            uid: 00000000-0000-4000-8000-0000000000e2
+            name: news-e2e
             brain: {{ persona: {PRESET}, llm: {{ temperature: 0.3, max_tokens: 512 }} }}
             tools: {{ server: mcp, allow: [mcp__web_search], max_rounds: 4 }}
             input:

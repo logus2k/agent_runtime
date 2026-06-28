@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .admin import router as admin_router
@@ -62,6 +64,17 @@ app.include_router(admin_router)
 async def health() -> dict:
     """Liveness probe (used by the compose healthcheck)."""
     return {"status": "ok", "service": "agent_runtime", "version": __version__}
+
+
+# Static admin UI at the app root. Mounted LAST so the explicit /health and /admin
+# routes above take precedence; the SPA assets and index.html are served for the rest.
+# Guarded by existence so a bare/dev process without a frontend dir still boots.
+_frontend = Path(settings.frontend_dir)
+if _frontend.is_dir():
+    app.mount("/", StaticFiles(directory=str(_frontend), html=True), name="frontend")
+    log.info("serving admin UI from %s", _frontend.resolve())
+else:
+    log.warning("frontend dir %s not found — admin UI not served", _frontend)
 
 
 def main() -> None:

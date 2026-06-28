@@ -31,5 +31,8 @@ ENV PYTHONPATH=/app/src
 COPY data/ ./data/
 COPY documents/ ./documents/
 
+# Static admin UI (served by FastAPI at /; FRONTEND_DIR defaults to "frontend").
+COPY frontend/ ./frontend/
+
 # Single-process entrypoint: uvicorn serving /health (and, later, the farm).
 CMD ["python", "-m", "agent_runtime.app"]

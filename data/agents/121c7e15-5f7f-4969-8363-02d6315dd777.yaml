@@ -1,0 +1,24 @@
+version: '0.1'
+uid: 121c7e15-5f7f-4969-8363-02d6315dd777
+name: news-demo
+description: News Agent demo (web_search) → L2K Chat
+trigger:
+  type: schedule
+brain:
+  persona: news_curator
+  llm:
+    temperature: 0.3
+    max_tokens: 16384
+tools:
+  server: mcp
+  allow:
+  - mcp__web_search
+  max_rounds: 4
+input:
+  template: Curate the {n} best morning headlines about {topic}.
+  vars:
+    n: 5
+    topic: AI agents
+delivery:
+  channel: whatsapp
+  target: 120363427427912302@g.us

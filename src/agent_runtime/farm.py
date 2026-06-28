@@ -211,12 +211,17 @@ class Farm:
         env = delivery.envelope
         cid, sid = env.header.cid, env.header.sid
         data = env.payload.data or {}
-        agent_id = data.get("agent")
+        # Route by the immutable uid (agent_uid). Fall back to the friendly name
+        # (legacy `agent`, or `agent_name`) so jobs minted before the uid migration
+        # still resolve. `ref` is just for logs.
+        agent_uid = data.get("agent_uid")
+        agent_name = data.get("agent_name") or data.get("agent")
+        ref = agent_uid or agent_name
 
         try:
-            if not agent_id:
+            if not agent_uid and not agent_name:
                 log.error(
-                    "trigger %s has no 'agent' in payload.data (%s) — acking, "
+                    "trigger %s has no 'agent_uid'/'agent' in payload.data (%s) — acking, "
                     "cannot route", delivery.entry_id, data,
                 )
                 return  # ack in finally
@@ -229,36 +234,42 @@ class Farm:
             else:
                 log.info(
                     "duplicate trigger cid=%s sid=%s (agent=%s) — already processed, "
-                    "skipping", cid, sid, agent_id,
+                    "skipping", cid, sid, ref,
                 )
                 return  # ack in finally
 
-            record = self._registry.get(agent_id)
+            record = (
+                self._registry.get(agent_uid) if agent_uid
+                else self._registry.get_by_name(agent_name)
+            )
             if record is None:
                 log.error(
-                    "trigger %s names unknown agent '%s' (known: %s) — acking",
-                    delivery.entry_id, agent_id, self._registry.ids,
+                    "trigger %s names unknown agent (uid=%s name=%s; known uids: %s) — "
+                    "acking", delivery.entry_id, agent_uid, agent_name, self._registry.ids,
                 )
                 return  # ack in finally
 
             async with self._sem:
-                log.info("running agent '%s' (cid=%s sid=%s)", agent_id, cid, sid)
+                log.info(
+                    "running agent '%s' (%s) (cid=%s sid=%s)",
+                    record.name, record.uid, cid, sid,
+                )
                 await asyncio.wait_for(
                     self._handler(record, env), timeout=s.job_timeout_s
                 )
-                log.info("agent '%s' completed (cid=%s)", agent_id, cid)
+                log.info("agent '%s' completed (cid=%s)", record.name, cid)
 
         except asyncio.TimeoutError:
             log.error(
                 "agent '%s' timed out after %ds (cid=%s)",
-                agent_id, s.job_timeout_s, cid,
+                ref, s.job_timeout_s, cid,
             )
         except asyncio.CancelledError:
-            log.warning("agent '%s' cancelled (cid=%s)", agent_id, cid)
+            log.warning("agent '%s' cancelled (cid=%s)", ref, cid)
             raise
         except Exception as exc:  # noqa: BLE001 - one job's failure must not kill the farm
             log.error(
-                "agent '%s' failed (cid=%s): %s", agent_id, cid, exc, exc_info=True
+                "agent '%s' failed (cid=%s): %s", ref, cid, exc, exc_info=True
             )
         finally:
             try:

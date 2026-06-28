@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Runtime — Admin</title>
+  <script>
+    document.documentElement.setAttribute("data-theme", localStorage.getItem("theme") || "light");
+  </script>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Agent Runtime <span class="muted">Admin</span></h1>
+    <div class="topbar-right">
+      <div class="health" id="health" title="Service health">
+        <span class="dot" id="health-dot"></span>
+        <span id="health-text">checking…</span>
+      </div>
+      <button class="ghost" id="theme-toggle" title="Toggle light/dark">
+        <span id="theme-icon">🌙</span><span id="theme-label">Dark</span>
+      </button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="agents">Agents</button>
+    <button class="tab" data-tab="consistency">Consistency</button>
+    <button class="tab" data-tab="runs">Runs</button>
+  </nav>
+
+  <main>
+    <!-- ================= AGENTS ================= -->
+    <section class="tab-panel" data-panel="agents">
+      <section class="panel">
+        <h2 id="form-title">Create agent</h2>
+        <form id="agent-form" autocomplete="off">
+          <div class="grid">
+            <label>
+              <span class="cap">Name <span class="req">*</span>
+                <span class="help" tabindex="0" data-tip="Human-friendly label, editable any time. NOT the identity — the immutable uid is. e.g. 'Morning AI News'.">?</span>
+              </span>
+              <input name="name" required placeholder="Morning AI News" />
+            </label>
+
+            <label id="uid-field" hidden>
+              <span class="cap">Uid <span class="muted">(immutable)</span>
+                <span class="help" tabindex="0" data-tip="Server-assigned UUID — the routing key. Cannot be changed; rename edits the Name only.">?</span>
+              </span>
+              <input name="uid" readonly />
+            </label>
+
+            <label>
+              <span class="cap">Version
+                <span class="help" tabindex="0" data-tip="DSL version 'major.minor'. This runtime accepts major 0.x.">?</span>
+              </span>
+              <input name="version" value="0.1" placeholder="0.1" />
+            </label>
+
+            <label class="full">
+              <span class="cap">Description <span class="muted">(optional)</span></span>
+              <input name="description" placeholder="Morning AI headlines to the ops chat" />
+            </label>
+
+            <label>
+              <span class="cap">Trigger
+                <span class="help" tabindex="0" data-tip="schedule = fired by a scheduler job; channel = fired by an inbound channel event.">?</span>
+              </span>
+              <select name="trigger_type">
+                <option value="schedule">schedule</option>
+                <option value="channel">channel</option>
+              </select>
+            </label>
+
+            <label>
+              <span class="cap">Persona <span class="req">*</span>
+                <span class="help" tabindex="0" data-tip="agent_server preset name (the cognition). e.g. 'news_curator'.">?</span>
+              </span>
+              <input name="persona" required placeholder="news_curator" />
+            </label>
+
+            <label>
+              <span class="cap">Temperature <span class="muted">(optional)</span></span>
+              <input type="number" name="temperature" step="0.1" min="0" placeholder="0.3" />
+            </label>
+            <label>
+              <span class="cap">Max tokens <span class="muted">(optional)</span></span>
+              <input type="number" name="max_tokens" min="1" placeholder="16384" />
+            </label>
+
+            <label>
+              <span class="cap">Tools server <span class="muted">(optional)</span>
+                <span class="help" tabindex="0" data-tip="MCP server key (must equal the runtime's configured key, usually 'mcp'). Leave blank for a no-tools agent.">?</span>
+              </span>
+              <input name="tools_server" placeholder="mcp" />
+            </label>
+            <label>
+              <span class="cap">Tools allow <span class="muted">(space/comma)</span>
+                <span class="help" tabindex="0" data-tip="Allowed tool names, each &lt;server&gt;__&lt;tool&gt;, e.g. mcp__newsapi_search mcp__fetch_url.">?</span>
+              </span>
+              <input name="tools_allow" placeholder="mcp__newsapi_search mcp__fetch_url" />
+            </label>
+            <label>
+              <span class="cap">Max rounds</span>
+              <input type="number" name="tools_max_rounds" min="1" placeholder="3" />
+            </label>
+
+            <label class="full">
+              <span class="cap">Input template
+                <span class="help" tabindex="0" data-tip="Prompt template with {placeholders} filled from Input vars (and event overrides).">?</span>
+              </span>
+              <input name="input_template" placeholder="Curate the {n} best morning headlines about {topic}." />
+            </label>
+            <label class="full">
+              <span class="cap">Input vars <span class="muted">(JSON)</span></span>
+              <textarea name="input_vars" rows="2" placeholder='{ "n": 5, "topic": "AI agents" }'></textarea>
+            </label>
+
+            <label>
+              <span class="cap">Delivery channel <span class="req">*</span></span>
+              <select name="delivery_channel">
+                <option value="whatsapp">whatsapp</option>
+                <option value="bus">bus</option>
+                <option value="tts">tts</option>
+              </select>
+            </label>
+            <label>
+              <span class="cap">Delivery target <span class="req">*</span>
+                <span class="help" tabindex="0" data-tip="Where the result goes. WhatsApp: a chat id like 351...@c.us or ...@g.us.">?</span>
+              </span>
+              <input name="delivery_target" required placeholder="351961050313@c.us" />
+            </label>
+          </div>
+
+          <div class="actions">
+            <button type="submit" class="primary" id="submit-btn">Create</button>
+            <button type="button" class="ghost" id="validate-btn">Validate</button>
+            <button type="button" class="ghost" id="cancel-edit" hidden>Cancel</button>
+            <span class="form-msg" id="form-msg"></span>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Agents <span class="muted" id="agent-count"></span></h2>
+          <button id="refresh-agents" class="ghost">Refresh</button>
+        </div>
+        <table id="agents-table">
+          <thead>
+            <tr><th>Name</th><th>Uid</th><th>Trigger</th><th>Persona</th><th>Tools</th><th>Delivery</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="agents-body"><tr><td colspan="7" class="muted">loading…</td></tr></tbody>
+        </table>
+      </section>
+    </section>
+
+    <!-- ================= CONSISTENCY ================= -->
+    <section class="tab-panel" data-panel="consistency" hidden>
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Consistency <span class="muted">job ↔ agent</span></h2>
+          <button id="refresh-consistency" class="ghost">Refresh</button>
+        </div>
+        <p class="muted small">Cross-references scheduler jobs with agent records. <strong>Dangling</strong> = a job points at an agent that doesn't exist (silently dropped at fire time). <strong>Orphan</strong> = an agent no job triggers.</p>
+        <div id="consistency-out"><p class="muted">press Refresh…</p></div>
+      </section>
+    </section>
+
+    <!-- ================= RUNS ================= -->
+    <section class="tab-panel" data-panel="runs" hidden>
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Runs</h2>
+          <div class="row">
+            <select id="runs-agent"><option value="">all agents</option></select>
+            <button id="refresh-runs" class="ghost">Load</button>
+          </div>
+        </div>
+        <div id="runs-out"><p class="muted">select an agent (or all) and press Load…</p></div>
+      </section>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

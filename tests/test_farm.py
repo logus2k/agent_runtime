@@ -34,7 +34,8 @@ def _noop_registry(tmp_path: Path) -> Registry:
         textwrap.dedent(
             """
             version: "0.1"
-            id: noop
+            uid: 00000000-0000-4000-8000-0000000000a1
+            name: noop
             brain: { persona: p }
             delivery: { channel: bus, target: t }
             """
@@ -76,8 +77,8 @@ async def test_farm_dispatch_idempotency_and_routing(tmp_path):
     calls: list[str] = []
 
     async def handler(record, env):
-        # the resolved record + event reach the pipeline
-        assert record.id == "noop"
+        # the resolved record + event reach the pipeline (routed by name fallback)
+        assert record.name == "noop"
         calls.append(env.header.cid)
 
     farm = Farm(settings, registry, handler)

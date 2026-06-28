@@ -49,37 +49,38 @@ class Runner:
     async def run(self, record: AgentRecord, env: EventEnvelope) -> None:
         s = self._settings
         cid = env.header.cid
+        # Every run event carries the agent's uid + (snapshot) name so the admin
+        # runs view can group/label by agent without a registry lookup.
+        lbl = {"agent_uid": record.uid, "agent_name": record.name}
+
+        async def emit(event_type: str, data: dict) -> None:
+            await self._emit(cid, event_type, {**lbl, **data})
+
         overrides = (env.payload.data or {}).get("vars") or {}
         task_text = self._build_task(record, overrides)
 
         mcp = self._make_mcp(record)
 
         async def on_tool(turn, name, args, result):
-            await self._emit(cid, "tool.exec", {"turn": turn, "name": name, "args": args})
-            await self._emit(
-                cid, "tool.result", {"turn": turn, "name": name, "result": result[:2000]}
-            )
+            await emit("tool.exec", {"turn": turn, "name": name, "args": args})
+            await emit("tool.result", {"turn": turn, "name": name, "result": result[:2000]})
 
         brain_res = await run_brain(
             record, task_text, agent_server=self._agent_server, mcp=mcp, on_tool=on_tool
         )
         if brain_res.thought:
-            await self._emit(cid, "agent.thought", {"thought": brain_res.thought})
+            await emit("agent.thought", {"thought": brain_res.thought})
 
         if not brain_res.answer.strip():
             # Never deliver an empty message — fail loudly instead.
-            await self._emit(
-                cid, "workflow.terminated", {"reason": "empty_answer"}
-            )
-            raise RuntimeError(f"agent '{record.id}' produced an empty answer (cid={cid})")
+            await emit("workflow.terminated", {"reason": "empty_answer"})
+            raise RuntimeError(f"agent '{record.name}' produced an empty answer (cid={cid})")
 
         gr = apply_guardrails(record.guardrails, brain_res.answer)
         if not gr.ok:
-            log.error("guardrail blocked agent '%s' (cid=%s): %s", record.id, cid, gr.reason)
-            await self._emit(
-                cid, "workflow.terminated", {"reason": "guardrail_blocked", "detail": gr.reason}
-            )
-            raise RuntimeError(f"guardrail blocked delivery for '{record.id}': {gr.reason}")
+            log.error("guardrail blocked agent '%s' (cid=%s): %s", record.name, cid, gr.reason)
+            await emit("workflow.terminated", {"reason": "guardrail_blocked", "detail": gr.reason})
+            raise RuntimeError(f"guardrail blocked delivery for '{record.name}': {gr.reason}")
 
         delivery_id = await deliver(
             record.delivery,
@@ -90,15 +91,12 @@ class Runner:
             cid=cid,
         )
 
-        await self._emit(
-            cid,
+        await emit(
             "agent.result",
             {"output": brain_res.answer[:4000], "delivery_id": delivery_id,
              "channel": record.delivery.channel},
         )
-        await self._emit(
-            cid, "workflow.terminated", {"reason": "done", "turns": brain_res.turns_used}
-        )
+        await emit("workflow.terminated", {"reason": "done", "turns": brain_res.turns_used})
 
     # --- helpers ------------------------------------------------------------
 
@@ -111,7 +109,7 @@ class Runner:
             return template.format(**merged)
         except KeyError as exc:
             raise RuntimeError(
-                f"agent '{record.id}' input.template references missing var {exc}"
+                f"agent '{record.name}' input.template references missing var {exc}"
             ) from exc
 
     def _make_mcp(self, record: AgentRecord) -> MCPClient | None:
@@ -119,7 +117,7 @@ class Runner:
             return None
         if record.tools.server != self._settings.mcp_server_key:
             raise RuntimeError(
-                f"agent '{record.id}' uses MCP server '{record.tools.server}' but the "
+                f"agent '{record.name}' uses MCP server '{record.tools.server}' but the "
                 f"runtime is configured for '{self._settings.mcp_server_key}'"
             )
         return MCPClient(self._settings.mcp_url, server=record.tools.server)

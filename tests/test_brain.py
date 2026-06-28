@@ -43,7 +43,8 @@ class FakeMCP:
 def _record(with_tools=True, max_rounds=3):
     return AgentRecord(
         version="0.1",
-        id="t",
+        uid="00000000-0000-4000-8000-0000000000b1",
+        name="t",
         brain=Brain(persona="general"),
         tools=Tools(server="mcp", allow=["mcp__web_search"], max_rounds=max_rounds)
         if with_tools
@@ -149,7 +150,8 @@ async def test_brain_live_web_search():
 
     record = AgentRecord(
         version="0.1",
-        id="live",
+        uid="00000000-0000-4000-8000-0000000000b2",
+        name="live",
         brain=Brain(persona=LIVE_PRESET),
         tools=Tools(server="mcp", allow=["mcp__web_search"], max_rounds=4),
         delivery=Delivery(channel="bus", target="x"),

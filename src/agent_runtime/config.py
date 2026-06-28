@@ -76,6 +76,9 @@ class Settings:
 
     # --- Agent registry ---
     agents_dir: str = _str("AGENTS_DIR", "data/agents")
+    # Static admin UI dir (served at / by the FastAPI app). Relative to the workdir;
+    # baked into the image at /app/frontend.
+    frontend_dir: str = _str("FRONTEND_DIR", "frontend")
 
     # --- Downstream services ---
     agent_server_url: str = _str("AGENT_SERVER_URL", "http://agent_server:7701")
@@ -88,6 +91,9 @@ class Settings:
     whatsapp_bridge_url: str = _str("WHATSAPP_BRIDGE_URL", "http://whatsapp-bridge:3399")
     whatsapp_agent_name: str = _str("WHATSAPP_AGENT_NAME", "news-agent")
     whatsapp_token: str = _str("WHATSAPP_TOKEN", "")  # secret — env only, never the DSL
+    # Scheduler admin API — read-only, for the admin UI's consistency view (which jobs
+    # target which agents). Reachable on logus2k_network. Joined server-side to dodge CORS.
+    scheduler_url: str = _str("SCHEDULER_URL", "http://agent-scheduler-app:6816")
 
     # --- Bus identity + run-event observability ---
     sender_id: str = _str("SENDER_ID", "agent-runtime")

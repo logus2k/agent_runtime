@@ -1,6 +1,7 @@
 # Administration Frontend — Specification
 
-> **Status:** specification only (no code yet). Defines the **missing** administration
+> **Status:** IMPLEMENTED (2026-06-28). Served from the agent_runtime container at `/`
+> (admin API under `/admin`). Defines the **missing** administration
 > capabilities for `agent_runtime` agent records. Grounded in the current code:
 > [src/agent_runtime/admin.py](../src/agent_runtime/admin.py),
 > [src/agent_runtime/dsl.py](../src/agent_runtime/dsl.py),
@@ -237,9 +238,13 @@ the surface widens, add the `ADMIN_TOKEN` bearer noted in `admin.py`.
 
 Mirror the Scheduler Agent precedent exactly (consistency + reuse):
 
-- Served by the same FastAPI process from a `frontend/` dir at the app root (`/`), so it
-  works both directly and behind a reverse-proxy path prefix (derive base from
-  `window.location`).
+- **Served from the `agent_runtime` container itself** — the same FastAPI app that already
+  exposes the admin API (`agent-runtime-app`, `127.0.0.1:6817`). No new service/container.
+  Today that app only mounts the `/admin` router and `/health`; this adds (a) a new
+  `frontend/` dir baked into the agent_runtime image via `COPY frontend/ ./frontend/`
+  (exactly like the scheduler), and (b) a `StaticFiles` mount serving it at the app root
+  (`/`). The page derives its API base from `window.location`, so it works both directly
+  and behind a reverse-proxy path prefix.
 - Public access via the existing nginx + **oauth2-proxy**, gated to **a single owner
   identity** (`logus2k@gmail.com`) using the established `/oauth2/auth-admin` pattern in
   [proxy_server/conf/nginx.conf](../../proxy_server/conf/nginx.conf). No per-request auth
@@ -261,9 +266,12 @@ Mirror the Scheduler Agent precedent exactly (consistency + reuse):
 
 ## 9. Open decisions
 
-1. **Consistency join location:** *Leaning client-side* — the UI calls both APIs and joins
-   by `agent_uid`, keeping the runtime decoupled from the scheduler's URL. (Server-side
-   `/admin/consistency` is one call but couples the two services.)
+1. **Consistency join location:** *Built server-side* — `GET /admin/consistency` joins the
+   scheduler's `/jobs` (by `agent_uid`) with the registry inside agent_runtime. Chosen over
+   the client-side lean for **CORS reliability**: the UI is same-origin to agent_runtime,
+   which reaches the scheduler over `logus2k_network` (no browser cross-origin). The
+   coupling is one read-only env-configured URL (`SCHEDULER_URL`); it degrades gracefully
+   (`scheduler_ok:false`) if the scheduler is down.
 2. **Runs backing:** read the `agent-runtime-runs` stream live on each request vs a small
    rolling index keyed by `agent_uid`/`cid`. Start with live reads (bounded `limit`), add
    an index only if needed.

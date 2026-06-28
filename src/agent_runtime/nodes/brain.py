@@ -63,7 +63,7 @@ async def run_brain(
     if record.tools and record.tools.allow:
         if mcp is None:
             raise RuntimeError(
-                f"agent '{record.id}' declares tools but no MCP client was provided"
+                f"agent '{record.name}' declares tools but no MCP client was provided"
             )
         tools_spec = await mcp.openai_tools(record.tools.allow)
         max_rounds = record.tools.max_rounds
@@ -120,7 +120,7 @@ async def run_brain(
         # demanding the answer (and no <think>) so we never deliver empty.
         log.warning(
             "agent '%s' produced no final answer (hit_cap=%s); forcing a tool-less "
-            "final round", record.id, hit_cap,
+            "final round", record.name, hit_cap,
         )
         msg = await agent_server.chat(
             persona,
