@@ -104,6 +104,7 @@ def _summary(rec: AgentRecord) -> dict:
         "uid": rec.uid,
         "name": rec.name,
         "description": rec.description,
+        "enabled": rec.enabled,
         "trigger_type": rec.trigger.type,
         "persona": rec.brain.persona,
         "tools_server": rec.tools.server if rec.tools else None,
@@ -199,6 +200,29 @@ async def delete_agent(uid: str, request: Request) -> Response:
     reg.delete(uid)
     log.info("deleted agent %s (%s)", uid, path)
     return Response(status_code=204)
+
+
+async def _set_enabled(request: Request, uid: str, value: bool) -> dict:
+    reg = _registry(request)
+    rec = reg.get(uid)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"no agent '{uid}'")
+    updated = rec.model_copy(update={"enabled": value})
+    path = _persist_and_upsert(request, updated)
+    log.info("agent '%s' (%s) enabled=%s -> %s", updated.name, uid, value, path)
+    return {"ok": True, "uid": uid, "name": updated.name, "enabled": value}
+
+
+@router.post("/agents/{uid}/enable")
+async def enable_agent(uid: str, request: Request) -> dict:
+    """Mark the agent active — the farm will run it on trigger again."""
+    return await _set_enabled(request, uid, True)
+
+
+@router.post("/agents/{uid}/disable")
+async def disable_agent(uid: str, request: Request) -> dict:
+    """Mark the agent inactive — the farm skips it on trigger (record is kept)."""
+    return await _set_enabled(request, uid, False)
 
 
 @router.post("/agents/validate")

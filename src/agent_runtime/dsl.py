@@ -140,6 +140,9 @@ class AgentRecord(_Strict):
     uid: str
     name: str
     description: Optional[str] = None
+    # When False the farm skips this agent on trigger (the record is kept). Defaults
+    # True so existing records (without the field) load as active.
+    enabled: bool = True
     trigger: Trigger = Field(default_factory=Trigger)
     brain: Brain
     tools: Optional[Tools] = None

@@ -58,6 +58,8 @@ export class AgentRuntimeClient {
   updateAgent(uid, record) { return this._request("PUT", `/admin/agents/${encodeURIComponent(uid)}`, record); }
   deleteAgent(uid) { return this._request("DELETE", `/admin/agents/${encodeURIComponent(uid)}`); }
   validateAgent(record) { return this._request("POST", "/admin/agents/validate", record); }
+  enableAgent(uid) { return this._request("POST", `/admin/agents/${encodeURIComponent(uid)}/enable`); }
+  disableAgent(uid) { return this._request("POST", `/admin/agents/${encodeURIComponent(uid)}/disable`); }
   reload() { return this._request("POST", "/admin/reload"); }
 
   // observability + seam

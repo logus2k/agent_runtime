@@ -57,6 +57,13 @@
               <input name="version" value="0.1" placeholder="0.1" />
             </label>
 
+            <label class="checkbox-cell">
+              <span class="cap">Active
+                <span class="help" tabindex="0" data-tip="When inactive, the farm SKIPS this agent on its trigger (the record is kept). Toggle anytime here or from the table.">?</span>
+              </span>
+              <input type="checkbox" name="active" checked />
+            </label>
+
             <label class="full">
               <span class="cap">Description <span class="muted">(optional)</span></span>
               <input name="description" placeholder="Morning AI headlines to the ops chat" />
@@ -126,10 +133,12 @@
             </label>
             <label>
               <span class="cap">Delivery target <span class="req">*</span>
-                <span class="help" tabindex="0" data-tip="Where the result goes. For WhatsApp, pick a chat from the dropdown (the id is filled in for you); the box stores the actual id. For a chat not listed (e.g. a direct number), choose 'Custom id…' and type it. For bus/tts, type the target directly.">?</span>
+                <span class="help" tabindex="0" data-tip="Where the result goes. For WhatsApp, pick a chat from the dropdown (its id is used behind the scenes). For a chat not listed (e.g. a direct number) choose 'Type an id…' and a box appears to type it. For bus/tts, type the target directly.">?</span>
               </span>
-              <select id="wa-target-select" hidden></select>
-              <input name="delivery_target" required placeholder="pick a WhatsApp chat above, or type an id (351...@c.us)" />
+              <div class="target-row">
+                <select id="wa-target-select" hidden></select>
+                <input name="delivery_target" hidden placeholder="type a chat id, e.g. 351961050313@c.us" />
+              </div>
             </label>
           </div>
 

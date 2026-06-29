@@ -249,6 +249,13 @@ class Farm:
                 )
                 return  # ack in finally
 
+            if not record.enabled:
+                log.info(
+                    "agent '%s' (%s) is inactive — skipping (cid=%s sid=%s)",
+                    record.name, record.uid, cid, sid,
+                )
+                return  # ack in finally
+
             async with self._sem:
                 log.info(
                     "running agent '%s' (%s) (cid=%s sid=%s)",
