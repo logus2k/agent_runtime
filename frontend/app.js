@@ -58,14 +58,16 @@ class AdminApp {
     if (name === "runs") this.loadRuns();
   }
 
+  // The dot reflects service health; the text shows the active/inactive agent count
+  // (kept current by loadAgents, which runs after every change).
   async pollHealth() {
-    const dot = this.$("#health-dot"), text = this.$("#health-text");
+    const dot = this.$("#health-dot");
     try {
-      const h = await this.client.health();
+      await this.client.health();
       dot.className = "dot ok";
-      text.textContent = `ok · ${h.version}`;
     } catch {
-      dot.className = "dot bad"; text.textContent = "unavailable";
+      dot.className = "dot bad";
+      this.$("#health-text").textContent = "unavailable";
     }
   }
 
@@ -289,6 +291,8 @@ class AdminApp {
     try {
       const { agents } = await this.client.listAgents();
       this.$("#agent-count").textContent = `(${agents.length})`;
+      const active = agents.filter((a) => a.enabled !== false).length;
+      this.$("#health-text").textContent = `${active} active · ${agents.length - active} inactive`;
       this._populateRunsAgents(agents);
       if (!agents.length) {
         body.innerHTML = `<tr><td colspan="7" class="muted">no agents yet</td></tr>`;
