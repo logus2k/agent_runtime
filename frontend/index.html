@@ -126,9 +126,10 @@
             </label>
             <label>
               <span class="cap">Delivery target <span class="req">*</span>
-                <span class="help" tabindex="0" data-tip="Where the result goes. WhatsApp: a chat id like 351...@c.us or ...@g.us.">?</span>
+                <span class="help" tabindex="0" data-tip="Where the result goes. For WhatsApp, pick a chat from the dropdown (the id is filled in for you); the box stores the actual id. For a chat not listed (e.g. a direct number), choose 'Custom id…' and type it. For bus/tts, type the target directly.">?</span>
               </span>
-              <input name="delivery_target" required placeholder="351961050313@c.us" />
+              <select id="wa-target-select" hidden></select>
+              <input name="delivery_target" required placeholder="pick a WhatsApp chat above, or type an id (351...@c.us)" />
             </label>
           </div>
 

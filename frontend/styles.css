@@ -75,6 +75,7 @@ input, select, textarea {
   background: var(--bg); color: var(--text); width: 100%;
 }
 input:read-only { opacity: 0.7; }
+#wa-target-select { margin-bottom: 6px; }
 textarea { resize: vertical; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
 
 .help {

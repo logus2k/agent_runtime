@@ -68,4 +68,5 @@ export class AgentRuntimeClient {
     return this._request("GET", `/admin/runs?${q.toString()}`);
   }
   consistency() { return this._request("GET", "/admin/consistency"); }
+  listWhatsappTargets() { return this._request("GET", "/admin/channels/whatsapp/targets"); }
 }

@@ -26,6 +26,7 @@ secret check here (e.g. an ADMIN_TOKEN bearer).
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -320,6 +321,79 @@ async def consistency(request: Request) -> dict:
         "orphan_count": sum(1 for a in agent_rows if a["orphan"]),
         "dangling_count": len(dangling),
     }
+
+
+# --- channel target discovery (for the delivery dropdown) --------------------
+
+# Short cache so opening the agent editor doesn't reconnect to the bridge every time.
+_WA_CACHE: dict = {"ts": 0.0, "targets": [], "ok": False}
+_WA_TTL = 60.0
+
+
+async def _fetch_whatsapp_targets() -> dict:
+    """Connect to the WhatsApp bridge's /agent namespace (same creds delivery uses) and
+    list groups + contacts as {id, name, kind}. Read-only; degrades gracefully."""
+    now = time.monotonic()
+    if _WA_CACHE["ok"] and (now - _WA_CACHE["ts"]) < _WA_TTL:
+        return {"targets": _WA_CACHE["targets"], "bridge_ok": True, "error": None, "cached": True}
+    if not settings.whatsapp_token:
+        return {"targets": [], "bridge_ok": False,
+                "error": "WHATSAPP_TOKEN not set — cannot list chats", "cached": False}
+
+    import socketio  # local import: package loads without socketio at rest
+
+    sio = socketio.AsyncClient()
+    targets: list[dict] = []
+    try:
+        await sio.connect(
+            settings.whatsapp_bridge_url, namespaces=["/agent"], wait_timeout=10,
+            auth={"agentName": settings.whatsapp_agent_name, "token": settings.whatsapp_token},
+        )
+        groups = await sio.call("listGroups", {}, namespace="/agent", timeout=15)
+        for g in (groups or {}).get("groups", []):
+            if g.get("id"):
+                targets.append({"id": g["id"], "name": g.get("name") or g["id"], "kind": "group"})
+        try:
+            contacts = await sio.call("listContacts", {}, namespace="/agent", timeout=15)
+            # WhatsApp's LID migration makes the bridge return ~2 rows per person
+            # (one keyed on the LID, one on the phone number) sharing the same chat id.
+            # Collapse by id and pick the best label: a real (non-numeric) saved name if
+            # present, else the phone number that matches the id (never the LID).
+            best: dict[str, tuple[int, str]] = {}
+            for c in (contacts or {}).get("contacts", []):
+                cid = c.get("id")
+                if not cid:
+                    continue
+                local = cid.split("@", 1)[0]
+                name = (c.get("name") or "").strip()
+                number = (c.get("number") or "").strip()
+                real_name = bool(name) and not name.isdigit()
+                label = name if real_name else local
+                score = (2 if real_name else 0) + (1 if number == local else 0)
+                if cid not in best or score > best[cid][0]:
+                    best[cid] = (score, label)
+            for cid, (_, label) in best.items():
+                targets.append({"id": cid, "name": label, "kind": "contact"})
+        except Exception as exc:  # noqa: BLE001 - groups still useful if contacts fail
+            log.warning("listContacts failed (groups returned): %s", exc)
+    except Exception as exc:  # noqa: BLE001 - degrade loudly but don't 500 the UI
+        log.warning("whatsapp targets fetch failed: %s", exc)
+        return {"targets": [], "bridge_ok": False, "error": str(exc), "cached": False}
+    finally:
+        try:
+            await sio.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+
+    _WA_CACHE.update(ts=now, targets=targets, ok=True)
+    return {"targets": targets, "bridge_ok": True, "error": None, "cached": False}
+
+
+@router.get("/channels/whatsapp/targets")
+async def whatsapp_targets(request: Request) -> dict:
+    """Friendly chat list for the delivery-target dropdown: groups + contacts with their
+    ids. The UI shows the name and stores the id in delivery.target."""
+    return await _fetch_whatsapp_targets()
 
 
 # --- bulk --------------------------------------------------------------------

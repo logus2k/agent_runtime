@@ -26,6 +26,9 @@ class AdminApp {
     this.$("#agents-body").addEventListener("click", (e) => this.onRowAction(e));
     this.$("#refresh-consistency").addEventListener("click", () => this.loadConsistency());
     this.$("#refresh-runs").addEventListener("click", () => this.loadRuns());
+    this.form.elements["delivery_channel"].addEventListener("change", () => this.onDeliveryChannelChange());
+    this.$("#wa-target-select").addEventListener("change", () => this.onWaSelect());
+    this.onDeliveryChannelChange(); // channel defaults to whatsapp -> show + load the picker
 
     this.pollHealth();
     this.loadAgents();
@@ -162,6 +165,7 @@ class AdminApp {
       rec.input?.vars && Object.keys(rec.input.vars).length ? JSON.stringify(rec.input.vars, null, 2) : "");
     set("delivery_channel", rec.delivery?.channel || "whatsapp");
     set("delivery_target", rec.delivery?.target);
+    this.onDeliveryChannelChange(rec.delivery?.target); // show + preselect the picker
 
     this.$("#uid-field").hidden = false;
     this.$("#form-title").textContent = `Edit agent: ${rec.name}`;
@@ -179,6 +183,54 @@ class AdminApp {
     this.$("#submit-btn").textContent = "Create";
     this.$("#cancel-edit").hidden = true;
     this.msg("", "");
+    this.onDeliveryChannelChange(); // reset() restores channel=whatsapp -> refresh picker
+  }
+
+  // --- delivery target dropdown (whatsapp) --------------------------------
+
+  // Show the chat picker only for whatsapp; load it (optionally preselecting an id).
+  onDeliveryChannelChange(selectedId) {
+    const sel = this.$("#wa-target-select");
+    const isWa = this.form.elements["delivery_channel"].value === "whatsapp";
+    sel.hidden = !isWa;
+    if (isWa) this.loadWaTargets(selectedId ?? this.form.elements["delivery_target"].value);
+  }
+
+  // Copy the chosen chat's id into delivery_target (the stored value); "Custom id…"
+  // just focuses the text box so you can type a direct number.
+  onWaSelect() {
+    const v = this.$("#wa-target-select").value;
+    const inp = this.form.elements["delivery_target"];
+    if (v && v !== "__custom__") inp.value = v;
+    else if (v === "__custom__") inp.focus();
+  }
+
+  async loadWaTargets(selectedId) {
+    const sel = this.$("#wa-target-select");
+    sel.innerHTML = `<option value="">— loading chats… —</option>`;
+    let data;
+    try {
+      data = await this.client.listWhatsappTargets();
+    } catch (e) {
+      sel.innerHTML = `<option value="__custom__">(couldn't load chats — type the id below)</option>`;
+      return;
+    }
+    if (!data.bridge_ok) {
+      sel.innerHTML = `<option value="__custom__">(bridge unavailable — type the id below)</option>`;
+      return;
+    }
+    const groups = data.targets.filter((t) => t.kind === "group");
+    const contacts = data.targets.filter((t) => t.kind === "contact");
+    const optList = (arr) => arr.map((t) =>
+      `<option value="${this.esc(t.id)}">${this.esc(t.name)}</option>`).join("");
+    let html = `<option value="">— select a WhatsApp chat —</option>`;
+    if (groups.length) html += `<optgroup label="Groups">${optList(groups)}</optgroup>`;
+    if (contacts.length) html += `<optgroup label="Contacts">${optList(contacts)}</optgroup>`;
+    html += `<option value="__custom__">Custom id…</option>`;
+    sel.innerHTML = html;
+    // Preselect the current target if it's a known chat; else mark it custom.
+    if (selectedId && data.targets.some((t) => t.id === selectedId)) sel.value = selectedId;
+    else if (selectedId) sel.value = "__custom__";
   }
 
   // --- agents table -------------------------------------------------------
