@@ -12,7 +12,8 @@ brain:
 tools:
   server: mcp
   allow:
-  - mcp__web_search
+  - mcp__newsapi_search
+  - mcp__fetch_url
   max_rounds: 4
 input:
   template: Curate the {n} best morning headlines about {topic}.
