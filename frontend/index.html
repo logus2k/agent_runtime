@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Agent Runtime — Admin</title>
+  <title>Agent Runtime</title>
   <script>
     document.documentElement.setAttribute("data-theme", localStorage.getItem("theme") || "light");
   </script>
@@ -11,7 +11,7 @@
 </head>
 <body>
   <header class="topbar">
-    <h1>Agent Runtime <span class="muted">Admin</span></h1>
+    <h1>Agent Runtime</h1>
     <div class="topbar-right">
       <div class="health" id="health" title="Service health">
         <span class="dot" id="health-dot"></span>
@@ -23,13 +23,13 @@
     </div>
   </header>
 
-  <nav class="tabs">
-    <button class="tab active" data-tab="agents">Agents</button>
-    <button class="tab" data-tab="consistency">Consistency</button>
-    <button class="tab" data-tab="runs">Runs</button>
-  </nav>
-
   <main>
+    <nav class="tabs">
+      <button class="tab active" data-tab="agents">Agents</button>
+      <button class="tab" data-tab="consistency">Consistency</button>
+      <button class="tab" data-tab="runs">Runs</button>
+    </nav>
+
     <!-- ================= AGENTS ================= -->
     <section class="tab-panel" data-panel="agents">
       <section class="panel">

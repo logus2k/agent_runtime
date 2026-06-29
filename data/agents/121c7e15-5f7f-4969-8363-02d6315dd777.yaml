@@ -1,6 +1,6 @@
 version: '0.1'
 uid: 121c7e15-5f7f-4969-8363-02d6315dd777
-name: news-demo
+name: ai-morning-news
 description: News Agent demo (web_search) → L2K Chat
 trigger:
   type: schedule
@@ -19,6 +19,9 @@ input:
   vars:
     n: 5
     topic: AI agents
+memory:
+  policy: none
+  max_turns: 20
 delivery:
   channel: whatsapp
   target: 120363427427912302@g.us

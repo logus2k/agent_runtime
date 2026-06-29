@@ -1,7 +1,8 @@
 # Administration Frontend — Specification
 
 > **Status:** IMPLEMENTED (2026-06-28). Served from the agent_runtime container at `/`
-> (admin API under `/admin`). Defines the **missing** administration
+> (admin API under `/admin`); public at **https://logus2k.com/runtime/** behind nginx +
+> oauth2-proxy, owner-gated to logus2k@gmail.com. Defines the **missing** administration
 > capabilities for `agent_runtime` agent records. Grounded in the current code:
 > [src/agent_runtime/admin.py](../src/agent_runtime/admin.py),
 > [src/agent_runtime/dsl.py](../src/agent_runtime/dsl.py),

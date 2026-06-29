@@ -37,13 +37,29 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 button.ghost { background: transparent; }
 button.sm { padding: 4px 9px; font-size: 12px; }
 button.danger { color: var(--bad); border-color: var(--bad); }
-button:hover { filter: brightness(1.05); }
 
-.tabs { display: flex; gap: 4px; padding: 12px 24px 0; }
-.tab { border-bottom: 2px solid transparent; border-radius: 8px 8px 0 0; }
-.tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.tabs {
+    display: flex;
+    padding-left: 10px;
+}
+.tab {
+    border-bottom: 0px solid transparent;
+    border-radius: 8px 8px 0 0;
+}
+.tab.active {
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: -1px;
+    border-bottom: 1px solid var(--panel);
+    z-index: 1;
+}
 
-main { max-width: 1300px; margin: 0 auto; padding: 24px; display: grid; gap: 24px; }
+main {
+    max-width: 1300px;
+    margin: 0 auto;
+    padding: 24px;
+    display: grid;
+}
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
 .panel h2 { margin: 0 0 14px; font-size: 15px; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
