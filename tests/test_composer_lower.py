@@ -1,10 +1,8 @@
-"""composer Phase 1: the regression gate.
+"""composer: lowering the News Agent (authored in the NEW vocabulary, no adapter).
 
-The link-traced Python lowering MUST reproduce ``patron/js/compile.js``'s output on the
-News Agent, byte-for-byte (design §4.5). If the generic model can't reproduce the one
-case that already runs, it isn't done. We also prove the lowering is *link-traced* (not
-presence-based like compile.js): a graph whose result chain reaches no destination
-fails loudly, and the lowered record validates against the live ``dsl.py`` AgentRecord.
+lower_graph(news_agent.graph.json) must equal the golden runtime DSL, the lowered record
+must validate against the live ``dsl.py`` AgentRecord, and the lowering must be
+*link-traced* (a graph whose flow reaches no destination fails loudly).
 """
 
 import copy
@@ -22,16 +20,16 @@ GRAPH = json.loads((FIXTURES / "news_agent.graph.json").read_text())
 GOLDEN = json.loads((FIXTURES / "news_agent.golden.json").read_text())
 
 
-def test_news_agent_lowers_identically_to_compile_js():
-    """The whole point: composer lowering == compile.js golden."""
+def test_news_agent_lowers_to_golden_runtime_dsl():
+    """The whole point: the new-vocabulary graph lowers to the expected runtime DSL."""
     result = lower_graph(copy.deepcopy(GRAPH))
     expected = {"ok": GOLDEN["ok"], "dsl": GOLDEN["dsl"], "schedule": GOLDEN["schedule"]}
     assert result == expected
 
 
 def test_lowered_record_validates_against_runtime_dsl():
-    """The lowered flat record must load under the live AgentRecord. compile.js emits
-    'id' (the admin layer maps it to uid+name on deploy); we complete those two fields
+    """The lowered flat record must load under the live AgentRecord. The record carries
+    'id'; the admin layer maps it to uid+name on deploy — we complete those two fields
     the way the deploy bridge does, then assert the rest validates."""
     dsl = dict(lower_graph(copy.deepcopy(GRAPH))["dsl"])
     name = dsl.pop("id")
@@ -44,12 +42,11 @@ def test_lowered_record_validates_against_runtime_dsl():
 
 
 def test_lowering_is_link_traced_not_presence_based():
-    """Remove the wire from Deliver to WhatsApp: compile.js (presence) would still
-    emit; the link-traced lowering must fail loudly because the result chain reaches
-    no destination."""
+    """Remove the Agent→WhatsApp wire: a presence-based compiler would still emit; the
+    link-traced lowering must fail loudly because the flow reaches no destination."""
     broken = copy.deepcopy(GRAPH)
-    # links: [..., [4, 4, 0, 5, 0, "destination"]] is Deliver(4) -> WhatsApp(5).
-    broken["links"] = [lk for lk in broken["links"] if not (lk[1] == 4 and lk[3] == 5)]
+    # links: [2, 2, 0, 3, 0, "flow"] is Agent(2) -> WhatsApp(3).
+    broken["links"] = [lk for lk in broken["links"] if not (lk[1] == 2 and lk[3] == 3)]
     result = lower_graph(broken)
     assert result["ok"] is False
     assert any("destination" in e for e in result["errors"])
@@ -57,7 +54,7 @@ def test_lowering_is_link_traced_not_presence_based():
 
 def test_missing_trigger_fails_loudly():
     broken = copy.deepcopy(GRAPH)
-    broken["nodes"] = [n for n in broken["nodes"] if n["type"] != "patron/agent/trigger"]
+    broken["nodes"] = [n for n in broken["nodes"] if n["type"] != "trigger"]
     result = lower_graph(broken)
     assert result["ok"] is False
     assert any("Trigger" in e for e in result["errors"])
@@ -70,8 +67,8 @@ def test_non_dict_graph_raises():
         Graph(["not", "a", "graph"])  # type: ignore[arg-type]
 
 
-def test_schedule_defaults_match_compile_js():
-    """The fixture's Trigger carries no cron/timezone props; compile.js defaults them
-    to '0 7 * * *' and '' (UTC). The lowering must do the same."""
+def test_schedule_lowers_from_trigger_config():
+    """The Trigger's cron/timezone config lowers to the scheduler-job spec beside the
+    record (empty timezone == UTC)."""
     sched = lower_graph(copy.deepcopy(GRAPH))["schedule"]
     assert sched == {"cron": "0 7 * * *", "timezone": ""}

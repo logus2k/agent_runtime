@@ -31,7 +31,7 @@ from .blocks import (
     Trigger,
     WhatsApp,
 )
-from .catalog import BLOCK_TYPES, Catalog, block_for_graph_type
+from .catalog import BLOCK_TYPES, Catalog
 from .edge import Edge, TraceRecord
 from .executor import (
     ExecContext,
@@ -66,7 +66,6 @@ __all__ = [
     "Bus",
     "Catalog",
     "BLOCK_TYPES",
-    "block_for_graph_type",
     "Graph",
     "lower_graph",
     "LoweringError",

@@ -1,12 +1,17 @@
 """The runner — the agent pipeline handler the farm dispatches to.
 
-For one trigger it runs the linear News-Agent pipeline:
-    build task (input.template + vars + event overrides)
-      → brain (FC loop over agent_server + MCP)
-      → guardrail (Proxy)
-      → delivery (whatsapp | bus)
-and emits run events to the bus (Step 6 observability) keyed by the trigger's cid so
-the run is replayable in the agent_bus console.
+The agent runs as a **composer graph** executed by the ``GraphExecutor``: for a linear
+record the graph is ``trigger → agent → destination``, walked by following real edges
+(not a hardcoded stage order). Node handlers do the work:
+    trigger  → build the task (input.template + vars + event overrides)
+    agent    → brain (FC loop over agent_server + MCP) + guardrail (Proxy)
+    dest     → delivery (whatsapp | bus | tts)
+Run events are emitted to the bus keyed by the trigger's cid so the run is replayable in
+the agent_bus console.
+
+This is the same behaviour the flat pipeline had, but the execution path is now the new
+graph structure — so a branching/looping agent (Branch/Loop nodes) runs through the very
+same executor once its IR is produced.
 
 Failures are loud: a guardrail block or a delivery error raises (the farm logs it and
 emits no false success). Observability-emit failures are logged but don't fail the job
@@ -22,6 +27,8 @@ from agent_bus_client import EventEnvelope, new_event
 from agent_bus_client.bus import BusClient
 
 from .agent_server_client import AgentServerClient
+from .composer.executor import ExecContext, GraphExecutor
+from .composer.ir import IREdge, IRGraph, IRNode
 from .config import Settings
 from .dsl import AgentRecord
 from .nodes.brain import run_brain
@@ -30,6 +37,21 @@ from .nodes.guardrail import apply_guardrails
 from .mcp_client import MCPClient
 
 log = logging.getLogger("agent_runtime.runner")
+
+
+def ir_from_record(record: AgentRecord) -> IRGraph:
+    """Build the graph-form IR for a linear agent record: trigger → agent →
+    destination. The destination node's kind is its channel, so the runner registers a
+    channel handler under that kind. This is the degenerate (linear) IR; a graph-form
+    record (Branch/Loop) would carry its own nodes/edges."""
+    dest_kind = record.delivery.channel
+    nodes = {
+        "trigger": IRNode("trigger", "trigger", {"agent": record.name}),
+        "agent": IRNode("agent", "agent", {"persona": record.brain.persona}),
+        dest_kind: IRNode(dest_kind, dest_kind, {"target": record.delivery.target}),
+    }
+    edges = [IREdge("trigger", "agent"), IREdge("agent", dest_kind)]
+    return IRGraph(nodes=nodes, edges=edges, entry="trigger")
 
 
 class Runner:
@@ -65,38 +87,49 @@ class Runner:
             await emit("tool.exec", {"turn": turn, "name": name, "args": args})
             await emit("tool.result", {"turn": turn, "name": name, "result": result[:2000]})
 
-        brain_res = await run_brain(
-            record, task_text, agent_server=self._agent_server, mcp=mcp, on_tool=on_tool
-        )
-        if brain_res.thought:
-            await emit("agent.thought", {"thought": brain_res.thought})
+        # --- node handlers (the work); the executor does the routing ---
+        async def h_trigger(node, value, ctx):
+            return task_text  # the task flows into the agent
 
-        if not brain_res.answer.strip():
-            # Never deliver an empty message — fail loudly instead.
-            await emit("workflow.terminated", {"reason": "empty_answer"})
-            raise RuntimeError(f"agent '{record.name}' produced an empty answer (cid={cid})")
+        async def h_agent(node, value, ctx):
+            brain_res = await run_brain(
+                record, value, agent_server=self._agent_server, mcp=mcp, on_tool=on_tool
+            )
+            if brain_res.thought:
+                await emit("agent.thought", {"thought": brain_res.thought})
+            if not brain_res.answer.strip():
+                await emit("workflow.terminated", {"reason": "empty_answer"})
+                raise RuntimeError(f"agent '{record.name}' produced an empty answer (cid={cid})")
+            gr = apply_guardrails(record.guardrails, brain_res.answer)
+            if not gr.ok:
+                log.error("guardrail blocked agent '%s' (cid=%s): %s", record.name, cid, gr.reason)
+                await emit("workflow.terminated", {"reason": "guardrail_blocked", "detail": gr.reason})
+                raise RuntimeError(f"guardrail blocked delivery for '{record.name}': {gr.reason}")
+            ctx.scratch["turns_used"] = brain_res.turns_used
+            return brain_res.answer
 
-        gr = apply_guardrails(record.guardrails, brain_res.answer)
-        if not gr.ok:
-            log.error("guardrail blocked agent '%s' (cid=%s): %s", record.name, cid, gr.reason)
-            await emit("workflow.terminated", {"reason": "guardrail_blocked", "detail": gr.reason})
-            raise RuntimeError(f"guardrail blocked delivery for '{record.name}': {gr.reason}")
+        async def h_deliver(node, value, ctx):
+            delivery_id = await deliver(
+                record.delivery, value, settings=s, bus=self._bus,
+                sio_factory=self._sio_factory, cid=cid,
+            )
+            await emit(
+                "agent.result",
+                {"output": value[:4000], "delivery_id": delivery_id,
+                 "channel": record.delivery.channel},
+            )
+            return delivery_id
 
-        delivery_id = await deliver(
-            record.delivery,
-            brain_res.answer,
-            settings=s,
-            bus=self._bus,
-            sio_factory=self._sio_factory,
-            cid=cid,
-        )
+        # Execute the agent as a graph: trigger → agent → destination.
+        graph = ir_from_record(record)
+        handlers = {"trigger": h_trigger, "agent": h_agent, record.delivery.channel: h_deliver}
+        exec_ctx = ExecContext(cid=cid, sender=self._settings.sender_id)
+        await GraphExecutor(handlers).run(graph, None, exec_ctx)
 
         await emit(
-            "agent.result",
-            {"output": brain_res.answer[:4000], "delivery_id": delivery_id,
-             "channel": record.delivery.channel},
+            "workflow.terminated",
+            {"reason": "done", "turns": exec_ctx.scratch.get("turns_used", 0)},
         )
-        await emit("workflow.terminated", {"reason": "done", "turns": brain_res.turns_used})
 
     # --- helpers ------------------------------------------------------------
 

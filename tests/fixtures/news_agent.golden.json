@@ -1,5 +1,5 @@
 {
-  "_comment": "GOLDEN: the canonical output of patron/js/compile.js on news_agent.graph.json. The composer's link-traced lowering MUST reproduce this byte-for-byte (the Phase-1 regression gate, design §4.5). Regenerate with: cd patron && node -e 'console.log(JSON.stringify(require(\"./js/compile.js\").compile(require(\"./examples/news-agent.graph.json\")), null, 2))'",
+  "_comment": "GOLDEN: the expected runtime DSL for the News Agent. lower_graph(news_agent.graph.json) MUST equal this. The graph is authored in the NEW composer vocabulary (trigger/agent/whatsapp, one flow wire, tools as Agent config); this record is the correct lowering — the agent behaves identically to before the migration.",
   "ok": true,
   "dsl": {
     "version": "0.1",

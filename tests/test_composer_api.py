@@ -2,7 +2,7 @@
 
 Builds a bare FastAPI app with just the composer router (no lifespan/bus/registry —
 the endpoints are stateless), and drives it with TestClient. Proves the catalog is
-served and that /composer/compile reproduces the compile.js golden over HTTP.
+served and that /composer/compile lowers the News Agent to the golden DSL over HTTP.
 """
 
 import copy
@@ -32,7 +32,7 @@ def test_catalog_endpoint_serves_block_schemas():
     assert {"agent", "trigger", "whatsapp"} <= kinds
 
 
-def test_compile_endpoint_matches_compile_js_golden():
+def test_compile_endpoint_matches_golden():
     r = client.post("/composer/compile", json=copy.deepcopy(GRAPH))
     assert r.status_code == 200
     assert r.json() == {"ok": GOLDEN["ok"], "dsl": GOLDEN["dsl"], "schedule": GOLDEN["schedule"]}

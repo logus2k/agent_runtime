@@ -135,11 +135,10 @@ class Block(Manageable, ABC):
 
 
 # --------------------------------------------------------------------------- #
-# Helpers shared by leaves (mirror compile.js's csv()/JSON-vars handling so the
-# lowering is byte-identical to today's output — see tests/test_composer_lower.py).
+# Helpers shared by leaves (CSV allow-lists + JSON input-vars parsing).
 # --------------------------------------------------------------------------- #
 def _csv(value: Any) -> list[str]:
-    """'a, b ,' -> ['a','b']  (split on comma, trim, drop empties) — like compile.js."""
+    """'a, b ,' -> ['a','b']  (split on comma, trim, drop empties)."""
     return [x.strip() for x in str(value or "").split(",") if x.strip()]
 
 
@@ -214,21 +213,22 @@ class Agent(Block):
                 },
             }
         }
-        # Optional capabilities — emitted only when the graph attached them (config
-        # refs, not ports). Order mirrors compile.js: rag, tools, guardrails, input.
-        if self.cfg("rag_present"):
+        # Optional capabilities — emitted only when the Agent's config carries them
+        # (capabilities are config fields ON the agent, not separate nodes). Presence is
+        # inferred from the capability's own keys. Order: rag, tools, guardrails, input.
+        if self.cfg("rag_rewriter") or self.cfg("rag_domains") or self.cfg("rag_use_graph"):
             frag["rag"] = {
                 "rewriter": self.cfg("rag_rewriter") or None,
                 "domains": _csv(self.cfg("rag_domains")),
                 "use_graph": bool(self.cfg("rag_use_graph")),
             }
-        if self.cfg("tools_present"):
+        if self.cfg("tools_allow") or self.cfg("tools_server"):
             frag["tools"] = {
                 "server": self.cfg("tools_server", ""),
                 "allow": _csv(self.cfg("tools_allow")),
                 "max_rounds": int(self.cfg("tools_max_rounds", 3)),
             }
-        if self.cfg("guard_present"):
+        if self.cfg("guard_forbidden") or self.cfg("guard_min_confidence") is not None:
             frag["guardrails"] = {
                 "forbidden": _csv(self.cfg("guard_forbidden")),
                 "min_confidence": float(self.cfg("guard_min_confidence", 0.5)),
@@ -265,7 +265,7 @@ class Activity(Block):
 class Trigger(Activity):
     """Boundary source: fires the agent. ``out`` only. Carries the agent id + the
     schedule (cron/timezone) — the *when* lives beside the record as a scheduler job,
-    not inside it (compile.js does the same)."""
+    not inside it."""
 
     kind = "trigger"
     label = "Trigger"
@@ -292,7 +292,7 @@ class Trigger(Activity):
 
     def schedule_spec(self) -> Optional[dict[str, Any]]:
         """The scheduler-job side (cron + timezone), or None for a non-schedule
-        trigger. Mirrors compile.js: cron defaults to '0 7 * * *', tz '' means UTC."""
+        trigger. cron defaults to '0 7 * * *'; an empty timezone means UTC."""
         if (self.cfg("trigger_type", "schedule") or "schedule") != "schedule":
             return None
         return {

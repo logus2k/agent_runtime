@@ -141,13 +141,13 @@ async def test_news_agent_ir_executes_end_to_end_with_fakes():
         seen.append(node.kind)
         if node.kind == "agent":
             return "curated headlines"
-        if node.kind == "destination":
+        if node.kind == "whatsapp":
             return {"delivered_to": node.config.get("target"), "text": value}
         return value
 
-    handlers = {"trigger": run_kind, "agent": run_kind, "destination": run_kind}
+    handlers = {"trigger": run_kind, "agent": run_kind, "whatsapp": run_kind}
     out = await GraphExecutor(handlers).run(ir, "fire")
-    assert seen == ["trigger", "agent", "destination"]
+    assert seen == ["trigger", "agent", "whatsapp"]
     assert out == {"delivered_to": "351961050313@c.us", "text": "curated headlines"}
 
 
