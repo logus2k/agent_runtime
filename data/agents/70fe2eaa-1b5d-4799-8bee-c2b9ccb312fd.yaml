@@ -1,5 +1,5 @@
 version: '0.1'
-uid: 121c7e15-5f7f-4969-8363-02d6315dd777
+uid: 70fe2eaa-1b5d-4799-8bee-c2b9ccb312fd
 name: ai-morning-news
 description: Morning AI headlines (NewsAPI) → L2K Chat
 enabled: true

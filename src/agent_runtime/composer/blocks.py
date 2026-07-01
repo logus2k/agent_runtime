@@ -186,10 +186,43 @@ class Agent(Block):
             label=self.label,
             ports=[Port("in", "in", STRING), Port("out", "out", STRING)],
             config=[
-                ConfigField("persona", "preset-ref", required=True),  # selects the model on agent_server
-                ConfigField("llm", "sampling-overrides"),             # temperature/max_tokens/… — NOT model
-                ConfigField("tools", "mcp-tool-refs"),
-                ConfigField("memory", "enum", values=["none", "thread_window"], default="none"),
+                ConfigField("persona", "preset-ref", required=True, control="text",
+                            placeholder="agent_server preset (selects the model)"),
+                ConfigField("temperature", "number", control="number", min=0, max=2, default=0.3),
+                ConfigField("max_tokens", "integer", control="number", min=1, default=1024,
+                            label="max tokens"),
+                ConfigField("input_template", "string", control="textarea", label="input template",
+                            placeholder="The task prompt; may reference {vars}"),
+                ConfigField("input_vars", "json", control="json", label="input vars",
+                            placeholder='{"n": 5, "topic": "AI agents"}'),
+                ConfigField("tools_server", "string", control="text", label="tools server"),
+                ConfigField("tools_allow", "mcp-tool-refs", control="text", label="tools (allow-list)",
+                            placeholder="server__tool, server__tool"),
+                ConfigField("tools_max_rounds", "integer", control="number", min=1, default=3,
+                            label="tools max rounds"),
+                ConfigField("memory", "enum", values=["none", "thread_window"], default="none",
+                            control="select", label="memory policy"),
+                ConfigField("memory_max_turns", "integer", control="number", min=1, default=20,
+                            label="memory max turns"),
+                # --- agent-level metadata (complete the record so an agent can be authored
+                #     from scratch, not just mirrored) ---
+                ConfigField("description", "string", control="textarea",
+                            placeholder="what this agent does"),
+                ConfigField("enabled", "boolean", control="boolean", default=True),
+                # --- optional sampling overrides (beyond temperature/max_tokens) ---
+                ConfigField("top_p", "number", control="number", label="top_p"),
+                ConfigField("top_k", "integer", control="number", label="top_k"),
+                ConfigField("min_p", "number", control="number", label="min_p"),
+                # --- optional RAG capability ---
+                ConfigField("rag_rewriter", "string", control="text", label="rag rewriter"),
+                ConfigField("rag_domains", "string", control="text", label="rag domains",
+                            placeholder="domain, domain"),
+                ConfigField("rag_use_graph", "boolean", control="boolean", label="rag use graph"),
+                # --- optional guardrails capability ---
+                ConfigField("guard_forbidden", "string", control="text", label="guardrail forbidden",
+                            placeholder="pattern, pattern"),
+                ConfigField("guard_min_confidence", "number", control="number", min=0, max=1,
+                            label="guardrail min confidence"),
             ],
         )
 
@@ -204,15 +237,21 @@ class Agent(Block):
         return errors
 
     def lower(self) -> dict[str, Any]:
-        frag: dict[str, Any] = {
-            "brain": {
-                "persona": self.cfg("persona", ""),
-                "llm": {
-                    "temperature": float(self.cfg("temperature", 0.3)),
-                    "max_tokens": int(self.cfg("max_tokens", 1024)),
-                },
-            }
+        llm: dict[str, Any] = {
+            "temperature": float(self.cfg("temperature", 0.3)),
+            "max_tokens": int(self.cfg("max_tokens", 1024)),
         }
+        # Optional sampling overrides — emitted ONLY when set, so an unset field is absent
+        # (matches the record, whose Optional llm params are None/omitted).
+        for key, caster in (("top_p", float), ("top_k", int), ("min_p", float)):
+            v = self.cfg(key)
+            if v not in (None, ""):
+                llm[key] = caster(v)
+        frag: dict[str, Any] = {"brain": {"persona": self.cfg("persona", ""), "llm": llm}}
+        # Agent-level metadata (top-level record fields).
+        if self.cfg("description") not in (None, ""):
+            frag["description"] = self.cfg("description")
+        frag["enabled"] = bool(self.cfg("enabled", True))
         # Optional capabilities — emitted only when the Agent's config carries them
         # (capabilities are config fields ON the agent, not separate nodes). Presence is
         # inferred from the capability's own keys. Order: rag, tools, guardrails, input.
@@ -228,11 +267,15 @@ class Agent(Block):
                 "allow": _csv(self.cfg("tools_allow")),
                 "max_rounds": int(self.cfg("tools_max_rounds", 3)),
             }
-        if self.cfg("guard_forbidden") or self.cfg("guard_min_confidence") is not None:
+        if self.cfg("guard_forbidden") or self.cfg("guard_min_confidence") not in (None, ""):
             frag["guardrails"] = {
                 "forbidden": _csv(self.cfg("guard_forbidden")),
-                "min_confidence": float(self.cfg("guard_min_confidence", 0.5)),
+                "min_confidence": float(self.cfg("guard_min_confidence") or 0.5),
             }
+        frag["memory"] = {
+            "policy": self.cfg("memory", "none") or "none",
+            "max_turns": int(self.cfg("memory_max_turns", 20)),
+        }
         frag["input"] = {
             "template": self.cfg("input_template", "") or "",
             "vars": _json_obj(self.cfg("input_vars"), where=f"{self.label} input_vars"),
@@ -277,10 +320,12 @@ class Trigger(Activity):
             label=self.label,
             ports=[Port("out", "out", ANY)],
             config=[
-                ConfigField("agent_id", "string", required=True),
-                ConfigField("trigger_type", "enum", values=["schedule", "channel"], default="schedule"),
-                ConfigField("cron", "string", default="0 7 * * *"),
-                ConfigField("timezone", "string"),
+                ConfigField("agent_id", "string", required=True, control="text", label="agent id"),
+                ConfigField("trigger_type", "enum", values=["schedule", "channel"],
+                            default="schedule", control="select", label="trigger type"),
+                ConfigField("cron", "string", default="0 7 * * *", control="text",
+                            placeholder="min hour dom month weekday"),
+                ConfigField("timezone", "string", control="text", placeholder="e.g. Europe/Lisbon"),
             ],
         )
 
@@ -327,7 +372,8 @@ class Transform(Activity):
             category=self.category,
             label=self.label,
             ports=[Port("in", "in", self._in), Port("out", "out", self._out)],
-            config=[ConfigField("script", "generated")],
+            config=[ConfigField("script", "generated", control="textarea",
+                                 placeholder="generated mapping code (see §6 codegen)")],
         )
 
     def lower(self) -> dict[str, Any]:
@@ -357,8 +403,10 @@ class Branch(Activity):
             label=self.label,
             ports=[Port("in", "in", ANY), Port("out", "out", ANY)],
             config=[
-                ConfigField("branches", "json", default=["then", "else"]),  # out-port labels
-                ConfigField("predicate", "json"),  # declarative rule chosen per branch (Phase-3, open)
+                ConfigField("branches", "json", default=["then", "else"], control="json",
+                            placeholder='["then", "else"]'),  # out-port labels
+                ConfigField("predicate", "json", control="textarea",
+                            placeholder="declarative rule (Phase-3, open)"),
             ],
         )
 
@@ -381,8 +429,10 @@ class Loop(Activity):
             label=self.label,
             ports=[Port("in", "in", ANY), Port("out", "out", ANY)],
             config=[
-                ConfigField("condition", "json"),
-                ConfigField("max_iter", "integer", default=10),
+                ConfigField("condition", "json", control="text",
+                            placeholder="loop-until condition"),
+                ConfigField("max_iter", "integer", default=10, control="number", min=1,
+                            label="max iter"),
             ],
         )
 
@@ -414,7 +464,8 @@ class Destination(Block):
             category=self.category,
             label=self.label,
             ports=[Port("in", "in", STRING)],
-            config=[ConfigField("target", "string", required=True)],
+            config=[ConfigField("target", "string", required=True, control="text",
+                                 placeholder="destination id (chat / stream / voice)")],
         )
 
     def lower(self) -> dict[str, Any]:
@@ -460,7 +511,8 @@ class Composite(Block):
             category=self.category,
             label=self.label,
             ports=[Port("in", "in", self._in), Port("out", "out", self._out)],
-            config=[ConfigField("workflow_ref", "string")],  # name/id of the saved workflow
+            config=[ConfigField("workflow_ref", "string", control="text", label="workflow ref",
+                                 placeholder="name/id of the saved workflow")],
         )
 
     def validate(self) -> list[str]:

@@ -107,13 +107,30 @@ class ConfigField:
     required: bool = False
     values: Optional[list[Any]] = None  # for kind == "enum"
     default: Any = None
+    # --- input-rendering metadata (how the editor should render this field) ---
+    # This is the block's own declaration of how its inputs are edited: the editor's
+    # Properties panel renders each field by its ``control`` (not a hardcoded guess).
+    control: str = "text"          # text | textarea | json | number | select
+    label: Optional[str] = None    # friendly caption (defaults to key)
+    placeholder: Optional[str] = None
+    min: Optional[float] = None    # for control == "number"
+    max: Optional[float] = None
 
     def to_json(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"key": self.key, "kind": self.kind, "required": self.required}
+        out: dict[str, Any] = {
+            "key": self.key, "kind": self.kind, "required": self.required,
+            "control": self.control, "label": self.label or self.key,
+        }
         if self.values is not None:
             out["values"] = self.values
         if self.default is not None:
             out["default"] = self.default
+        if self.placeholder is not None:
+            out["placeholder"] = self.placeholder
+        if self.min is not None:
+            out["min"] = self.min
+        if self.max is not None:
+            out["max"] = self.max
         return out
 
 

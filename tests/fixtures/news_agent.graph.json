@@ -10,21 +10,41 @@
     {
       "id": 1,
       "type": "trigger",
-      "pos": [40, 220],
-      "size": [240, 110],
+      "pos": [
+        40,
+        220
+      ],
+      "size": [
+        240,
+        110
+      ],
       "properties": {
         "agent_id": "ai-morning-news",
         "trigger_type": "schedule",
         "cron": "0 7 * * *",
         "timezone": "Europe/Lisbon"
       },
-      "outputs": [{ "name": "out", "type": "flow", "links": [1] }]
+      "outputs": [
+        {
+          "name": "out",
+          "type": "flow",
+          "links": [
+            1
+          ]
+        }
+      ]
     },
     {
       "id": 2,
       "type": "agent",
-      "pos": [340, 190],
-      "size": [300, 220],
+      "pos": [
+        340,
+        190
+      ],
+      "size": [
+        300,
+        220
+      ],
       "properties": {
         "persona": "news_curator",
         "temperature": 0.3,
@@ -34,22 +54,67 @@
         "tools_server": "mcp",
         "tools_allow": "mcp__newsapi_search, mcp__fetch_url",
         "tools_max_rounds": 4,
-        "memory": "none"
+        "memory": "none",
+        "memory_max_turns": 20,
+        "description": "Morning AI headlines (NewsAPI) → L2K Chat",
+        "enabled": true
       },
-      "inputs": [{ "name": "in", "type": "flow", "link": 1 }],
-      "outputs": [{ "name": "out", "type": "flow", "links": [2] }]
+      "inputs": [
+        {
+          "name": "in",
+          "type": "flow",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "type": "flow",
+          "links": [
+            2
+          ]
+        }
+      ]
     },
     {
       "id": 3,
       "type": "whatsapp",
-      "pos": [720, 220],
-      "size": [240, 80],
-      "properties": { "target": "120363427427912302@g.us" },
-      "inputs": [{ "name": "in", "type": "flow", "link": 2 }]
+      "pos": [
+        720,
+        220
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "properties": {
+        "target": "120363427427912302@g.us"
+      },
+      "inputs": [
+        {
+          "name": "in",
+          "type": "flow",
+          "link": 2
+        }
+      ]
     }
   ],
   "links": [
-    [1, 1, 0, 2, 0, "flow"],
-    [2, 2, 0, 3, 0, "flow"]
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "flow"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      0,
+      "flow"
+    ]
   ]
 }

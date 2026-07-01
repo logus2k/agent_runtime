@@ -1,5 +1,5 @@
 {
-  "_comment": "GOLDEN: expected runtime DSL for the News Agent, VALUES MATCHED TO THE LIVE RECORD (agent_runtime admin uid 121c7e15..., 2026-07-01). Regenerate: lower_graph(news_agent.graph.json).",
+  "_comment": "GOLDEN: expected runtime DSL for the News Agent (COMPLETE record — all fields the Patron model now captures). Regenerate: lower_graph(news_agent.graph.json).",
   "ok": true,
   "dsl": {
     "version": "0.1",
@@ -14,6 +14,8 @@
         "max_tokens": 16384
       }
     },
+    "description": "Morning AI headlines (NewsAPI) → L2K Chat",
+    "enabled": true,
     "tools": {
       "server": "mcp",
       "allow": [
@@ -21,6 +23,10 @@
         "mcp__fetch_url"
       ],
       "max_rounds": 4
+    },
+    "memory": {
+      "policy": "none",
+      "max_turns": 20
     },
     "input": {
       "template": "Curate the {n} best morning headlines about {topic}.",
