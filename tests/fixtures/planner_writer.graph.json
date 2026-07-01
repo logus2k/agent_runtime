@@ -1,0 +1,90 @@
+{
+  "_comment": "Multi-agent workflow (planner_writer): Trigger -> Agent(planner) -> Agent(writer) -> WhatsApp. Two agents chained: the planner's answer becomes the writer's task (writer has no input template, so the incoming value flows through verbatim). TOOL-LESS (personas only) for the first vertical slice. Mirrors news_agent.graph.json's litegraph shape. Lowered by Graph.to_workflow_ir() (NOT the linear lower()).",
+  "version": 0.4,
+  "last_node_id": 4,
+  "last_link_id": 3,
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "nodes": [
+    {
+      "id": 1,
+      "type": "trigger",
+      "pos": [40, 220],
+      "size": [240, 110],
+      "properties": {
+        "agent_id": "planner-writer",
+        "trigger_type": "schedule",
+        "cron": "0 8 * * *",
+        "timezone": "Europe/Lisbon"
+      },
+      "outputs": [
+        {"name": "out", "type": "flow", "links": [1]}
+      ]
+    },
+    {
+      "id": 2,
+      "type": "agent",
+      "pos": [340, 190],
+      "size": [300, 220],
+      "properties": {
+        "persona": "planner",
+        "temperature": 0.2,
+        "max_tokens": 2048,
+        "input_template": "Draft a plan about {topic}.",
+        "input_vars": "{\"topic\": \"AI agents\"}",
+        "memory": "none",
+        "memory_max_turns": 20,
+        "description": "Planner: produce a plan the writer expands",
+        "enabled": true
+      },
+      "inputs": [
+        {"name": "in", "type": "flow", "link": 1}
+      ],
+      "outputs": [
+        {"name": "out", "type": "flow", "links": [2]}
+      ]
+    },
+    {
+      "id": 3,
+      "type": "agent",
+      "pos": [720, 190],
+      "size": [300, 220],
+      "properties": {
+        "persona": "writer",
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "input_template": "",
+        "input_vars": "",
+        "memory": "none",
+        "memory_max_turns": 20,
+        "description": "Writer: expands the planner's plan into prose",
+        "enabled": true
+      },
+      "inputs": [
+        {"name": "in", "type": "flow", "link": 2}
+      ],
+      "outputs": [
+        {"name": "out", "type": "flow", "links": [3]}
+      ]
+    },
+    {
+      "id": 4,
+      "type": "whatsapp",
+      "pos": [1100, 220],
+      "size": [240, 80],
+      "properties": {
+        "target": "120363427427912302@g.us",
+        "target_name": "L2K Chat"
+      },
+      "inputs": [
+        {"name": "in", "type": "flow", "link": 3}
+      ]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "flow"],
+    [2, 2, 0, 3, 0, "flow"],
+    [3, 3, 0, 4, 0, "flow"]
+  ]
+}
