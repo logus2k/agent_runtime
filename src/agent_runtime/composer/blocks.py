@@ -204,7 +204,9 @@ class Agent(Block):
                 # No `tools_server` field: the MCP server is encoded in each tool's
                 # `<server>__tool` prefix (the picker returns prefixed names), so lowering
                 # derives it. Making the user type "mcp" was redundant + a typo footgun.
-                ConfigField("tools_allow", "mcp-tool-refs", control="mcp-tools", label="tools (allow-list)",
+                # Generic multi-select picker: control "resource-ref" + kind = resource id
+                # ("mcp-tool", which the descriptor declares multi=True). No bespoke code.
+                ConfigField("tools_allow", "mcp-tool", control="resource-ref", label="tools (allow-list)",
                             placeholder="server__tool, server__tool"),
                 ConfigField("tools_max_rounds", "integer", control="number", min=1, default=3,
                             label="tools max rounds"),

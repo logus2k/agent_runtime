@@ -61,3 +61,31 @@ async def list_items(desc: ResourceDescriptor, request: Request) -> dict[str, An
         return {"ok": False, "items": [], "error": str(exc)}
 
     return {"ok": False, "items": [], "error": f"unknown source '{src}'"}
+
+
+async def act_item(desc: ResourceDescriptor, request: Request, key: str, verb: str) -> dict[str, Any]:
+    """Perform a verb ('delete' or a declared action like pause/resume/run) on one item,
+    routed to the backing service. Returns ``{ok, status, error}``. The caller (resources_api)
+    has already gated the verb against the descriptor's capabilities/actions."""
+    src = desc.source
+    try:
+        if src == "scheduler":  # trigger jobs
+            base = f"{settings.scheduler_url.rstrip('/')}/jobs/{key}"
+            method, url = ("DELETE", base) if verb == "delete" else ("POST", f"{base}/{verb}")
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.request(method, url)
+            ok = resp.status_code < 300
+            return {"ok": ok, "status": resp.status_code, "error": None if ok else resp.text[:300]}
+
+        if src == "runtime":  # agents
+            if verb == "delete":
+                from ..admin import delete_agent
+                await delete_agent(key, request)  # 204 or raises HTTPException
+                return {"ok": True, "status": 204, "error": None}
+            return {"ok": False, "error": f"action '{verb}' not implemented yet for '{desc.id}'"}
+
+        return {"ok": False, "error": f"'{desc.id}' ({src}) has no write support yet"}
+
+    except Exception as exc:  # noqa: BLE001 - surface the failure, don't 500
+        detail = getattr(exc, "detail", None)
+        return {"ok": False, "error": str(detail if detail is not None else exc)}
