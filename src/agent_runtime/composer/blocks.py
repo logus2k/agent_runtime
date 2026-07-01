@@ -195,8 +195,10 @@ class Agent(Block):
                             placeholder="The task prompt; may reference {vars}"),
                 ConfigField("input_vars", "json", control="json", label="input vars",
                             placeholder='{"n": 5, "topic": "AI agents"}'),
-                ConfigField("tools_server", "string", control="text", label="tools server"),
-                ConfigField("tools_allow", "mcp-tool-refs", control="text", label="tools (allow-list)",
+                # No `tools_server` field: the MCP server is encoded in each tool's
+                # `<server>__tool` prefix (the picker returns prefixed names), so lowering
+                # derives it. Making the user type "mcp" was redundant + a typo footgun.
+                ConfigField("tools_allow", "mcp-tool-refs", control="mcp-tools", label="tools (allow-list)",
                             placeholder="server__tool, server__tool"),
                 ConfigField("tools_max_rounds", "integer", control="number", min=1, default=3,
                             label="tools max rounds"),
@@ -261,10 +263,14 @@ class Agent(Block):
                 "domains": _csv(self.cfg("rag_domains")),
                 "use_graph": bool(self.cfg("rag_use_graph")),
             }
-        if self.cfg("tools_allow") or self.cfg("tools_server"):
+        allow = _csv(self.cfg("tools_allow"))
+        if allow:
+            # The server key is encoded in the tool prefix (<server>__tool) — one MCP server
+            # per agent today. Derive it instead of carrying a redundant free-text field.
+            server = allow[0].split("__", 1)[0]
             frag["tools"] = {
-                "server": self.cfg("tools_server", ""),
-                "allow": _csv(self.cfg("tools_allow")),
+                "server": server,
+                "allow": allow,
                 "max_rounds": int(self.cfg("tools_max_rounds", 3)),
             }
         if self.cfg("guard_forbidden") or self.cfg("guard_min_confidence") not in (None, ""):
@@ -457,6 +463,10 @@ class Destination(Block):
 
     category = "Destination"
     channel: str = ""
+    # How the editor renders the `target` field. Subclasses override to a grounded picker
+    # (e.g. WhatsApp → a dropdown of real Groups/Contacts + "type an id"). Metadata-driven:
+    # the block declares the control, the editor renders the matching picker.
+    target_control: str = "text"
 
     def get_schema(self) -> BlockSchema:
         return BlockSchema(
@@ -464,12 +474,23 @@ class Destination(Block):
             category=self.category,
             label=self.label,
             ports=[Port("in", "in", STRING)],
-            config=[ConfigField("target", "string", required=True, control="text",
-                                 placeholder="destination id (chat / stream / voice)")],
+            config=[
+                # Human label for the target, auto-filled by the grounded picker (e.g. the
+                # WhatsApp group name). Shown FIRST (name before id). Display only; lowered
+                # only when set.
+                ConfigField("target_name", "string", control="text", label="target name (display)",
+                            placeholder="friendly name (auto-filled when picked)"),
+                ConfigField("target", "string", required=True, control=self.target_control,
+                            placeholder="destination id (chat / stream / voice)"),
+            ],
         )
 
     def lower(self) -> dict[str, Any]:
-        return {"delivery": {"channel": self.channel, "target": self.cfg("target", "")}}
+        delivery: dict[str, Any] = {"channel": self.channel, "target": self.cfg("target", "")}
+        name = self.cfg("target_name", "")
+        if name:
+            delivery["target_name"] = name
+        return {"delivery": delivery}
 
 
 # --------------------------------------------------------------------------- #
@@ -529,6 +550,7 @@ class WhatsApp(Destination):
     kind = "whatsapp"
     label = "WhatsApp"
     channel = "whatsapp"
+    target_control = "whatsapp-target"  # editor renders a Groups/Contacts picker + write-id
 
 
 class TTS(Destination):

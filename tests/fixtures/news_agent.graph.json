@@ -51,12 +51,11 @@
         "max_tokens": 16384,
         "input_template": "Curate the {n} best morning headlines about {topic}.",
         "input_vars": "{\"n\": 5, \"topic\": \"AI agents\"}",
-        "tools_server": "mcp",
         "tools_allow": "mcp__newsapi_search, mcp__fetch_url",
         "tools_max_rounds": 4,
         "memory": "none",
         "memory_max_turns": 20,
-        "description": "Morning AI headlines (NewsAPI) → L2K Chat",
+        "description": "Morning AI headlines (NewsAPI) \u2192 L2K Chat",
         "enabled": true
       },
       "inputs": [
@@ -88,7 +87,8 @@
         80
       ],
       "properties": {
-        "target": "120363427427912302@g.us"
+        "target": "120363427427912302@g.us",
+        "target_name": "L2K Chat"
       },
       "inputs": [
         {

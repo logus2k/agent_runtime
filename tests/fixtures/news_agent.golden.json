@@ -37,7 +37,8 @@
     },
     "delivery": {
       "channel": "whatsapp",
-      "target": "120363427427912302@g.us"
+      "target": "120363427427912302@g.us",
+      "target_name": "L2K Chat"
     }
   },
   "schedule": {

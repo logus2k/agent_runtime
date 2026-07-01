@@ -420,6 +420,53 @@ async def whatsapp_targets(request: Request) -> dict:
     return await _fetch_whatsapp_targets()
 
 
+# Short cache so opening the agent editor doesn't hit the MCP service every time.
+_MCP_CACHE: dict = {"ts": 0.0, "tools": [], "ok": False}
+_MCP_TTL = 60.0
+
+
+async def _fetch_mcp_tools() -> dict:
+    """List the tools the decoupled mcp-service advertises, for the Agent allow-list
+    picker. Names are returned **prefixed** (``mcp__web_search``) — the same namespaced
+    vocabulary the DSL allow-list and the LLM specs use, so the picker writes back exactly
+    what lowering expects. Read-only; degrades loudly-but-gracefully (never 500s the UI)."""
+    now = time.monotonic()
+    if _MCP_CACHE["ok"] and (now - _MCP_CACHE["ts"]) < _MCP_TTL:
+        return {"tools": _MCP_CACHE["tools"], "server_ok": True, "error": None, "cached": True}
+
+    from .mcp_client import MCPClient  # local import: keeps the module import-light
+
+    key = settings.mcp_server_key
+    client = MCPClient(settings.mcp_url, server=key)
+    try:
+        raw = await client.list_tools()
+    except Exception as exc:  # noqa: BLE001 - surface the failure in the UI, don't 500
+        log.warning("mcp tools fetch failed (%s): %s", settings.mcp_url, exc)
+        return {"tools": [], "server_ok": False, "error": str(exc), "cached": False}
+
+    tools: list[dict] = []
+    seen: set[str] = set()
+    for t in raw:
+        name = t.get("name")
+        if not name or name in seen:  # the catalog can advertise a tool twice; keep the first
+            continue
+        seen.add(name)
+        tools.append({
+            "name": f"{key}__{name}",              # namespaced (matches the allow-list)
+            "raw": name,
+            "description": t.get("description", ""),
+        })
+    _MCP_CACHE.update(ts=now, tools=tools, ok=True)
+    return {"tools": tools, "server_ok": True, "error": None, "cached": False}
+
+
+@router.get("/channels/mcp/tools")
+async def mcp_tools(request: Request) -> dict:
+    """Available MCP tools for the Agent tools allow-list picker: prefixed name +
+    description. The UI shows checkboxes and stores the selected names in tools.allow."""
+    return await _fetch_mcp_tools()
+
+
 # --- bulk --------------------------------------------------------------------
 
 @router.post("/reload")

@@ -119,6 +119,9 @@ class Memory(_Strict):
 class Delivery(_Strict):
     channel: Literal["whatsapp", "bus", "tts"]
     target: str
+    # Optional human label for the target (e.g. the WhatsApp group/contact name). Display
+    # only — routing keys on `target`. Blank when unknown; never load-bearing.
+    target_name: str = ""
 
     @field_validator("target")
     @classmethod
