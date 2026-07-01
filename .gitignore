@@ -2,3 +2,6 @@
 .pytest_cache/
 __pycache__/
 .env
+# Claude Code local working dir — includes isolated agent worktrees (nested git checkouts
+# that otherwise get committed as spurious submodule/gitlinks). Never track these.
+.claude/
