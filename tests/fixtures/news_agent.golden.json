@@ -1,24 +1,41 @@
 {
-  "_comment": "GOLDEN: the expected runtime DSL for the News Agent. lower_graph(news_agent.graph.json) MUST equal this. The graph is authored in the NEW composer vocabulary (trigger/agent/whatsapp, one flow wire, tools as Agent config); this record is the correct lowering — the agent behaves identically to before the migration.",
+  "_comment": "GOLDEN: expected runtime DSL for the News Agent, VALUES MATCHED TO THE LIVE RECORD (agent_runtime admin uid 121c7e15..., 2026-07-01). Regenerate: lower_graph(news_agent.graph.json).",
   "ok": true,
   "dsl": {
     "version": "0.1",
-    "id": "news-morning-ai",
-    "trigger": { "type": "schedule" },
+    "id": "ai-morning-news",
+    "trigger": {
+      "type": "schedule"
+    },
     "brain": {
       "persona": "news_curator",
-      "llm": { "temperature": 0.3, "max_tokens": 1024 }
+      "llm": {
+        "temperature": 0.3,
+        "max_tokens": 16384
+      }
     },
     "tools": {
       "server": "mcp",
-      "allow": ["mcp__newsapi_search", "mcp__fetch_url"],
-      "max_rounds": 3
+      "allow": [
+        "mcp__newsapi_search",
+        "mcp__fetch_url"
+      ],
+      "max_rounds": 4
     },
     "input": {
       "template": "Curate the {n} best morning headlines about {topic}.",
-      "vars": { "n": 5, "topic": "AI agents" }
+      "vars": {
+        "n": 5,
+        "topic": "AI agents"
+      }
     },
-    "delivery": { "channel": "whatsapp", "target": "351961050313@c.us" }
+    "delivery": {
+      "channel": "whatsapp",
+      "target": "120363427427912302@g.us"
+    }
   },
-  "schedule": { "cron": "0 7 * * *", "timezone": "" }
+  "schedule": {
+    "cron": "0 7 * * *",
+    "timezone": "Europe/Lisbon"
+  }
 }

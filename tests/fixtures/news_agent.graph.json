@@ -1,5 +1,5 @@
 {
-  "_comment": "News Agent authored in the NEW composer vocabulary: Trigger -> Agent -> WhatsApp, a single 'flow' wire between blocks, and capabilities (tools) as CONFIG on the Agent (no separate Tools/Deliver nodes, no typed-slot zoo, no legacy adapter). This is THE News Agent graph.",
+  "_comment": "News Agent (ai-morning-news) in the composer vocabulary, VALUES MATCHED TO THE LIVE RECORD uid 121c7e15-5f7f-4969-8363-02d6315dd777 (agent_runtime admin, 2026-07-01): Trigger -> Agent -> WhatsApp group. Lowers to the live runtime DSL.",
   "version": 0.4,
   "last_node_id": 3,
   "last_link_id": 2,
@@ -13,10 +13,10 @@
       "pos": [40, 220],
       "size": [240, 110],
       "properties": {
-        "agent_id": "news-morning-ai",
+        "agent_id": "ai-morning-news",
         "trigger_type": "schedule",
         "cron": "0 7 * * *",
-        "timezone": ""
+        "timezone": "Europe/Lisbon"
       },
       "outputs": [{ "name": "out", "type": "flow", "links": [1] }]
     },
@@ -28,12 +28,12 @@
       "properties": {
         "persona": "news_curator",
         "temperature": 0.3,
-        "max_tokens": 1024,
+        "max_tokens": 16384,
         "input_template": "Curate the {n} best morning headlines about {topic}.",
         "input_vars": "{\"n\": 5, \"topic\": \"AI agents\"}",
         "tools_server": "mcp",
         "tools_allow": "mcp__newsapi_search, mcp__fetch_url",
-        "tools_max_rounds": 3,
+        "tools_max_rounds": 4,
         "memory": "none"
       },
       "inputs": [{ "name": "in", "type": "flow", "link": 1 }],
@@ -43,8 +43,8 @@
       "id": 3,
       "type": "whatsapp",
       "pos": [720, 220],
-      "size": [220, 80],
-      "properties": { "target": "351961050313@c.us" },
+      "size": [240, 80],
+      "properties": { "target": "120363427427912302@g.us" },
       "inputs": [{ "name": "in", "type": "flow", "link": 2 }]
     }
   ],

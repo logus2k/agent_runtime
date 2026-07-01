@@ -7,8 +7,6 @@ pure routing + safety.
 """
 
 import copy
-import json
-from pathlib import Path
 
 import pytest
 
@@ -25,8 +23,9 @@ from agent_runtime.composer import (
 )
 from agent_runtime.composer.lower import Graph
 
-FIXTURES = Path(__file__).parent / "fixtures"
-GRAPH = json.loads((FIXTURES / "news_agent.graph.json").read_text())
+from _agentfixtures import agent_fixture_params
+
+PAIRS = agent_fixture_params()
 
 
 # --- linear execution ----------------------------------------------------------
@@ -132,23 +131,27 @@ async def test_unknown_kind_fails_loudly():
 
 
 # --- the linear News Agent, executed via IR ------------------------------------
-async def test_news_agent_ir_executes_end_to_end_with_fakes():
-    ir = Graph(copy.deepcopy(GRAPH)).to_ir()
+@pytest.mark.parametrize("graph, golden", PAIRS)
+async def test_agent_ir_executes_end_to_end_with_fakes(graph, golden):
+    """A lowered agent graph runs through the executor: trigger → agent → destination.
+    The destination channel + target come from the golden, not a hardcoded literal."""
+    ir = Graph(copy.deepcopy(graph)).to_ir()
     assert ir.entry.startswith("trigger:")
+    dest = golden["dsl"]["delivery"]  # {channel, target}
     seen: list[str] = []
 
     async def run_kind(node, value, ctx):
         seen.append(node.kind)
         if node.kind == "agent":
-            return "curated headlines"
-        if node.kind == "whatsapp":
+            return "AGENT_OUTPUT"
+        if node.kind == dest["channel"]:
             return {"delivered_to": node.config.get("target"), "text": value}
         return value
 
-    handlers = {"trigger": run_kind, "agent": run_kind, "whatsapp": run_kind}
+    handlers = {"trigger": run_kind, "agent": run_kind, dest["channel"]: run_kind}
     out = await GraphExecutor(handlers).run(ir, "fire")
-    assert seen == ["trigger", "agent", "whatsapp"]
-    assert out == {"delivered_to": "351961050313@c.us", "text": "curated headlines"}
+    assert seen == ["trigger", "agent", dest["channel"]]
+    assert out == {"delivered_to": dest["target"], "text": "AGENT_OUTPUT"}
 
 
 # --- Branch/Loop block schema + validation -------------------------------------
