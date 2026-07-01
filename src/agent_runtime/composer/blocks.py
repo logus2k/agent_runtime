@@ -186,8 +186,12 @@ class Agent(Block):
             label=self.label,
             ports=[Port("in", "in", STRING), Port("out", "out", STRING)],
             config=[
-                ConfigField("persona", "preset-ref", required=True, control="text",
+                # Identity/status lead the panel (authoring UX): enabled, persona, description.
+                ConfigField("enabled", "boolean", control="boolean", default=True),
+                ConfigField("persona", "preset-ref", required=True, control="preset",
                             placeholder="agent_server preset (selects the model)"),
+                ConfigField("description", "string", control="textarea",
+                            placeholder="what this agent does"),
                 ConfigField("temperature", "number", control="number", min=0, max=2, default=0.3),
                 ConfigField("max_tokens", "integer", control="number", min=1, default=1024,
                             label="max tokens"),
@@ -206,11 +210,7 @@ class Agent(Block):
                             control="select", label="memory policy"),
                 ConfigField("memory_max_turns", "integer", control="number", min=1, default=20,
                             label="memory max turns"),
-                # --- agent-level metadata (complete the record so an agent can be authored
-                #     from scratch, not just mirrored) ---
-                ConfigField("description", "string", control="textarea",
-                            placeholder="what this agent does"),
-                ConfigField("enabled", "boolean", control="boolean", default=True),
+                # (enabled / persona / description are shown first, above.)
                 # --- optional sampling overrides (beyond temperature/max_tokens) ---
                 ConfigField("top_p", "number", control="number", label="top_p"),
                 ConfigField("top_k", "integer", control="number", label="top_k"),

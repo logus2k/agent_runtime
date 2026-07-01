@@ -420,20 +420,11 @@ async def whatsapp_targets(request: Request) -> dict:
     return await _fetch_whatsapp_targets()
 
 
-# Short cache so opening the agent editor doesn't hit the MCP service every time.
-_MCP_CACHE: dict = {"ts": 0.0, "tools": [], "ok": False}
-_MCP_TTL = 60.0
-
-
 async def _fetch_mcp_tools() -> dict:
     """List the tools the decoupled mcp-service advertises, for the Agent allow-list
     picker. Names are returned **prefixed** (``mcp__web_search``) — the same namespaced
     vocabulary the DSL allow-list and the LLM specs use, so the picker writes back exactly
     what lowering expects. Read-only; degrades loudly-but-gracefully (never 500s the UI)."""
-    now = time.monotonic()
-    if _MCP_CACHE["ok"] and (now - _MCP_CACHE["ts"]) < _MCP_TTL:
-        return {"tools": _MCP_CACHE["tools"], "server_ok": True, "error": None, "cached": True}
-
     from .mcp_client import MCPClient  # local import: keeps the module import-light
 
     key = settings.mcp_server_key
@@ -442,7 +433,7 @@ async def _fetch_mcp_tools() -> dict:
         raw = await client.list_tools()
     except Exception as exc:  # noqa: BLE001 - surface the failure in the UI, don't 500
         log.warning("mcp tools fetch failed (%s): %s", settings.mcp_url, exc)
-        return {"tools": [], "server_ok": False, "error": str(exc), "cached": False}
+        return {"tools": [], "server_ok": False, "error": str(exc)}
 
     tools: list[dict] = []
     seen: set[str] = set()
@@ -456,8 +447,7 @@ async def _fetch_mcp_tools() -> dict:
             "raw": name,
             "description": t.get("description", ""),
         })
-    _MCP_CACHE.update(ts=now, tools=tools, ok=True)
-    return {"tools": tools, "server_ok": True, "error": None, "cached": False}
+    return {"tools": tools, "server_ok": True, "error": None}
 
 
 @router.get("/channels/mcp/tools")
@@ -465,6 +455,37 @@ async def mcp_tools(request: Request) -> dict:
     """Available MCP tools for the Agent tools allow-list picker: prefixed name +
     description. The UI shows checkboxes and stores the selected names in tools.allow."""
     return await _fetch_mcp_tools()
+
+
+async def _fetch_presets() -> dict:
+    """List the agent_server presets (the ``persona`` a brain references — it holds the
+    system prompt + sampling params + memory policy). For the persona dropdown. Read-only;
+    degrades loudly-but-gracefully (never 500s the UI)."""
+    url = f"{settings.agent_server_url.rstrip('/')}/admin/api/agents"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001 - surface the failure in the UI, don't 500
+        log.warning("presets fetch failed (%s): %s", url, exc)
+        return {"presets": [], "server_ok": False, "error": str(exc)}
+
+    presets: list[dict] = []
+    for a in (data or {}).get("agents", []):
+        name = a.get("name")
+        if not name:
+            continue
+        presets.append({"name": name, "memory_policy": a.get("memory_policy")})
+    presets.sort(key=lambda p: p["name"].lower())
+    return {"presets": presets, "server_ok": True, "error": None}
+
+
+@router.get("/channels/presets")
+async def presets(request: Request) -> dict:
+    """agent_server presets for the persona picker: name (+ memory policy). The UI shows a
+    dropdown and stores the chosen name in brain.persona."""
+    return await _fetch_presets()
 
 
 # --- bulk --------------------------------------------------------------------
