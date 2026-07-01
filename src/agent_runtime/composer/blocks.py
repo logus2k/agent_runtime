@@ -188,7 +188,9 @@ class Agent(Block):
             config=[
                 # Identity/status lead the panel (authoring UX): enabled, persona, description.
                 ConfigField("enabled", "boolean", control="boolean", default=True),
-                ConfigField("persona", "preset-ref", required=True, control="preset",
+                # Generic grounded picker: control "resource-ref" + kind = the resource id
+                # ("preset") → the editor renders a dropdown from /resources/preset. No bespoke code.
+                ConfigField("persona", "preset", required=True, control="resource-ref",
                             placeholder="agent_server preset (selects the model)"),
                 ConfigField("description", "string", control="textarea",
                             placeholder="what this agent does"),
