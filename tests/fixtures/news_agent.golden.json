@@ -1,0 +1,24 @@
+{
+  "_comment": "GOLDEN: the canonical output of patron/js/compile.js on news_agent.graph.json. The composer's link-traced lowering MUST reproduce this byte-for-byte (the Phase-1 regression gate, design §4.5). Regenerate with: cd patron && node -e 'console.log(JSON.stringify(require(\"./js/compile.js\").compile(require(\"./examples/news-agent.graph.json\")), null, 2))'",
+  "ok": true,
+  "dsl": {
+    "version": "0.1",
+    "id": "news-morning-ai",
+    "trigger": { "type": "schedule" },
+    "brain": {
+      "persona": "news_curator",
+      "llm": { "temperature": 0.3, "max_tokens": 1024 }
+    },
+    "tools": {
+      "server": "mcp",
+      "allow": ["mcp__newsapi_search", "mcp__fetch_url"],
+      "max_rounds": 3
+    },
+    "input": {
+      "template": "Curate the {n} best morning headlines about {topic}.",
+      "vars": { "n": 5, "topic": "AI agents" }
+    },
+    "delivery": { "channel": "whatsapp", "target": "351961050313@c.us" }
+  },
+  "schedule": { "cron": "0 7 * * *", "timezone": "" }
+}

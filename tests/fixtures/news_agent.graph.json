@@ -1,0 +1,72 @@
+{
+  "_comment": "Hand-authored News Agent as a Patron source-format graph (litegraph serialize shape). Trigger -> Brain (+Tools) -> Deliver -> WhatsApp. Doubles as the compiler test fixture; compile.js lowers it to the v0 runtime-DSL flat record.",
+  "version": 0.4,
+  "last_node_id": 5,
+  "last_link_id": 4,
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "nodes": [
+    {
+      "id": 1,
+      "type": "patron/agent/trigger",
+      "pos": [40, 220],
+      "size": [240, 90],
+      "properties": { "agent_id": "news-morning-ai", "trigger_type": "schedule" },
+      "outputs": [{ "name": "task", "type": "task", "links": [1] }]
+    },
+    {
+      "id": 2,
+      "type": "patron/agent/tools",
+      "pos": [40, 360],
+      "size": [240, 110],
+      "properties": {
+        "server": "mcp",
+        "allow": "mcp__newsapi_search, mcp__fetch_url",
+        "max_rounds": 3
+      },
+      "outputs": [{ "name": "tools", "type": "tools", "links": [2] }]
+    },
+    {
+      "id": 3,
+      "type": "patron/agent/brain",
+      "pos": [340, 220],
+      "size": [240, 170],
+      "properties": {
+        "persona": "news_curator",
+        "temperature": 0.3,
+        "max_tokens": 1024,
+        "input_template": "Curate the {n} best morning headlines about {topic}.",
+        "input_vars": "{\"n\": 5, \"topic\": \"AI agents\"}"
+      },
+      "inputs": [
+        { "name": "in", "type": "task", "link": 1 },
+        { "name": "tools", "type": "tools", "link": 2 }
+      ],
+      "outputs": [{ "name": "result", "type": "result", "links": [3] }]
+    },
+    {
+      "id": 4,
+      "type": "patron/agent/deliver",
+      "pos": [640, 250],
+      "size": [180, 60],
+      "properties": {},
+      "inputs": [{ "name": "result", "type": "result", "link": 3 }],
+      "outputs": [{ "name": "to", "type": "destination", "links": [4] }]
+    },
+    {
+      "id": 5,
+      "type": "patron/dest/whatsapp",
+      "pos": [870, 250],
+      "size": [200, 60],
+      "properties": { "target": "351961050313@c.us" },
+      "inputs": [{ "name": "to", "type": "destination", "link": 4 }]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 3, 0, "task"],
+    [2, 2, 0, 3, 1, "tools"],
+    [3, 3, 0, 4, 0, "result"],
+    [4, 4, 0, 5, 0, "destination"]
+  ]
+}

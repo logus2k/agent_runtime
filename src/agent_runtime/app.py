@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .admin import router as admin_router
+from .composer_api import router as composer_router
 from .config import settings
 from .farm import Farm
 from .registry import Registry
@@ -58,6 +59,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="agent_runtime", version=__version__, lifespan=lifespan)
 app.include_router(admin_router)
+app.include_router(composer_router)
 
 
 @app.get("/health")
