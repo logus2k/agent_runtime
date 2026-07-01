@@ -26,7 +26,7 @@ secret check here (e.g. an ADMIN_TOKEN bearer).
 from __future__ import annotations
 
 import logging
-import time
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -34,7 +34,7 @@ from typing import Any, Optional
 import httpx
 import yaml
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from .config import settings
 from .dsl import AgentRecord
@@ -349,20 +349,12 @@ async def consistency(request: Request) -> dict:
 
 # --- channel target discovery (for the delivery dropdown) --------------------
 
-# Short cache so opening the agent editor doesn't reconnect to the bridge every time.
-_WA_CACHE: dict = {"ts": 0.0, "targets": [], "ok": False}
-_WA_TTL = 60.0
-
-
 async def _fetch_whatsapp_targets() -> dict:
     """Connect to the WhatsApp bridge's /agent namespace (same creds delivery uses) and
     list groups + contacts as {id, name, kind}. Read-only; degrades gracefully."""
-    now = time.monotonic()
-    if _WA_CACHE["ok"] and (now - _WA_CACHE["ts"]) < _WA_TTL:
-        return {"targets": _WA_CACHE["targets"], "bridge_ok": True, "error": None, "cached": True}
     if not settings.whatsapp_token:
         return {"targets": [], "bridge_ok": False,
-                "error": "WHATSAPP_TOKEN not set — cannot list chats", "cached": False}
+                "error": "WHATSAPP_TOKEN not set — cannot list chats"}
 
     import socketio  # local import: package loads without socketio at rest
 
@@ -402,15 +394,14 @@ async def _fetch_whatsapp_targets() -> dict:
             log.warning("listContacts failed (groups returned): %s", exc)
     except Exception as exc:  # noqa: BLE001 - degrade loudly but don't 500 the UI
         log.warning("whatsapp targets fetch failed: %s", exc)
-        return {"targets": [], "bridge_ok": False, "error": str(exc), "cached": False}
+        return {"targets": [], "bridge_ok": False, "error": str(exc)}
     finally:
         try:
             await sio.disconnect()
         except Exception:  # noqa: BLE001
             pass
 
-    _WA_CACHE.update(ts=now, targets=targets, ok=True)
-    return {"targets": targets, "bridge_ok": True, "error": None, "cached": False}
+    return {"targets": targets, "bridge_ok": True, "error": None}
 
 
 @router.get("/channels/whatsapp/targets")
@@ -486,6 +477,47 @@ async def presets(request: Request) -> dict:
     """agent_server presets for the persona picker: name (+ memory policy). The UI shows a
     dropdown and stores the chosen name in brain.persona."""
     return await _fetch_presets()
+
+
+# --- template co-author (the Template Studio's "Improve" loop) ----------------
+
+# The agent_server preset that rewrites/improves input_templates (created out-of-band).
+TEMPLATE_WRITER_PRESET = "template_writer"
+_THINK_RE = re.compile(r"<think>.*?</think>", re.S)
+
+
+class TemplateWriterReq(BaseModel):
+    template: str = ""
+    instruction: str
+    vars: list[str] = Field(default_factory=list)
+
+
+@router.post("/tools/template-writer")
+async def template_writer(req: TemplateWriterReq) -> dict:
+    """Co-author an input_template: send the current template + the user's instruction (+ the
+    available {vars}) to the ``template_writer`` agent_server preset and return the improved
+    template. Degrades loudly-but-gracefully (never 500s the studio)."""
+    if not req.instruction.strip():
+        return {"ok": False, "error": "instruction is required"}
+
+    from .agent_server_client import AgentServerClient, AgentServerError
+
+    user = (
+        "CURRENT TEMPLATE:\n" + (req.template.strip() or "(empty)")
+        + "\n\nVARIABLES: " + (", ".join(req.vars) if req.vars else "(none)")
+        + "\n\nINSTRUCTION:\n" + req.instruction.strip()
+    )
+    client = AgentServerClient(settings.agent_server_url)
+    try:
+        msg = await client.chat(TEMPLATE_WRITER_PRESET, [{"role": "user", "content": user}])
+    except AgentServerError as exc:
+        log.warning("template-writer failed: %s", exc)
+        return {"ok": False, "error": str(exc)}
+
+    content = _THINK_RE.sub("", msg.get("content") or "").strip()
+    if not content:
+        return {"ok": False, "error": "template_writer returned an empty template"}
+    return {"ok": True, "template": content}
 
 
 # --- bulk --------------------------------------------------------------------

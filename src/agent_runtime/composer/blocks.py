@@ -195,7 +195,7 @@ class Agent(Block):
                 ConfigField("temperature", "number", control="number", min=0, max=2, default=0.3),
                 ConfigField("max_tokens", "integer", control="number", min=1, default=1024,
                             label="max tokens"),
-                ConfigField("input_template", "string", control="textarea", label="input template",
+                ConfigField("input_template", "string", control="template", label="input template",
                             placeholder="The task prompt; may reference {vars}"),
                 ConfigField("input_vars", "json", control="json", label="input vars",
                             placeholder='{"n": 5, "topic": "AI agents"}'),
