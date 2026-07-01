@@ -471,6 +471,7 @@ class Destination(Block):
     # (e.g. WhatsApp → a dropdown of real Groups/Contacts + "type an id"). Metadata-driven:
     # the block declares the control, the editor renders the matching picker.
     target_control: str = "text"
+    target_kind: str = "string"   # ConfigField kind; for a resource-ref picker = the resource id
 
     def get_schema(self) -> BlockSchema:
         return BlockSchema(
@@ -484,7 +485,7 @@ class Destination(Block):
                 # only when set.
                 ConfigField("target_name", "string", control="text", label="target name (display)",
                             placeholder="friendly name (auto-filled when picked)"),
-                ConfigField("target", "string", required=True, control=self.target_control,
+                ConfigField("target", self.target_kind, required=True, control=self.target_control,
                             placeholder="destination id (chat / stream / voice)"),
             ],
         )
@@ -554,7 +555,10 @@ class WhatsApp(Destination):
     kind = "whatsapp"
     label = "WhatsApp"
     channel = "whatsapp"
-    target_control = "whatsapp-target"  # editor renders a Groups/Contacts picker + write-id
+    # Generic grounded picker: resource "wa-target" (declares group_by/allow_free/sets) → the
+    # editor renders a Groups/Contacts dropdown + type-an-id + auto-fills target_name. No bespoke code.
+    target_control = "resource-ref"
+    target_kind = "wa-target"
 
 
 class TTS(Destination):

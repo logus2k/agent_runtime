@@ -6,7 +6,7 @@ renders them with one generic Picker + one generic Manager.
 
 from .descriptor import ResourceDescriptor
 from .registry import build_descriptors, descriptor_by_id, descriptors_json
-from .sources import act_item, list_items
+from .sources import act_item, list_items, update_item
 
 __all__ = [
     "ResourceDescriptor",
@@ -15,4 +15,5 @@ __all__ = [
     "descriptor_by_id",
     "descriptors_json",
     "list_items",
+    "update_item",
 ]

@@ -44,7 +44,8 @@ def build_descriptors() -> list[ResourceDescriptor]:
             id="trigger", label="Trigger", icon="icons/clock-alarm-20.svg", identity="job_id",
             source="scheduler", capabilities={LIST, GET, CREATE, UPDATE, DELETE},
             schema=_trigger_schema(), actions=["pause", "resume", "run"],
-            columns=["job_id", "trigger", "next_run_time"],
+            columns=["job_id", "cron", "timezone", "next_run_time"],
+            editable=True,  # the Manager can edit an existing job's schedule (cron/timezone)
         ),
         ResourceDescriptor(
             id="recipe", label="Recipe", icon="icons/table.svg", identity="slug",
@@ -80,6 +81,9 @@ def build_descriptors() -> list[ResourceDescriptor]:
                 {"key": "kind", "control": "text", "label": "kind"},
             ],
             columns=["name", "id", "kind"],
+            group_by="kind",            # optgroups: Groups / Contacts
+            allow_free=True,            # allow typing a chat id not in the list
+            sets={"target_name": "name"},  # picking a target fills the friendly name
         ),
     ]
 

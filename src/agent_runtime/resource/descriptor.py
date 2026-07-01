@@ -39,6 +39,13 @@ class ResourceDescriptor:
     # Optional display hints for the generic list view (which schema keys to show as columns).
     columns: list[str] = field(default_factory=list)
     multi: bool = False             # a picker for this resource selects MANY (e.g. mcp-tool allow-list)
+    editable: bool = False          # the Manager offers a schema-driven edit form (else create/edit is the composer's job)
+    # Picker refinements (keep the generic picker able to replace bespoke ones):
+    group_by: Optional[str] = None  # optgroup the single-select by this item field (e.g. "kind")
+    allow_free: bool = False        # allow typing an id not in the list ("type an id…")
+    # When an item is picked, also set sibling node fields from item fields: {siblingKey: itemField}
+    # e.g. {"target_name": "name"} — picking a WhatsApp target fills the friendly name.
+    sets: dict[str, str] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -52,4 +59,8 @@ class ResourceDescriptor:
             "actions": self.actions,
             "columns": self.columns or [self.identity],
             "multi": self.multi,
+            "editable": self.editable,
+            "group_by": self.group_by,
+            "allow_free": self.allow_free,
+            "sets": self.sets,
         }

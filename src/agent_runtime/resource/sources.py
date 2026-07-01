@@ -50,7 +50,12 @@ async def list_items(desc: ResourceDescriptor, request: Request) -> dict[str, An
                 resp = await client.get(url)
             resp.raise_for_status()
             data = resp.json()
-            items = data.get("jobs", data) if isinstance(data, dict) else data
+            jobs = data.get("jobs", data) if isinstance(data, dict) else data
+            # flatten trigger_args so cron/timezone are first-class (columns + edit-form prefill)
+            items = []
+            for j in jobs:
+                ta = j.get("trigger_args") or {}
+                items.append({**j, "cron": ta.get("cron_expression", ""), "timezone": ta.get("timezone", "")})
             return {"ok": True, "items": items, "error": None}
 
         if src == "client":  # patron-local (recipes): the runtime does not own the store
@@ -89,3 +94,27 @@ async def act_item(desc: ResourceDescriptor, request: Request, key: str, verb: s
     except Exception as exc:  # noqa: BLE001 - surface the failure, don't 500
         detail = getattr(exc, "detail", None)
         return {"ok": False, "error": str(detail if detail is not None else exc)}
+
+
+async def update_item(desc: ResourceDescriptor, request: Request, key: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Update one item from a schema-form body. Returns ``{ok, status, error}``. Only sources
+    where a flat edit is coherent are wired (triggers = schedule). Create-from-scratch and
+    agent edits stay the composer's job."""
+    body = body or {}
+    src = desc.source
+    try:
+        if src == "scheduler":  # edit an existing job's schedule (cron/timezone)
+            ta: dict[str, Any] = {"cron_expression": str(body.get("cron", "")).strip()}
+            tz = str(body.get("timezone", "")).strip()
+            if tz:
+                ta["timezone"] = tz
+            # PATCH requires trigger_type + trigger_args together (scheduler api.py).
+            patch = {"trigger_type": "cron", "trigger_args": ta}
+            url = f"{settings.scheduler_url.rstrip('/')}/jobs/{key}"
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.patch(url, json=patch)
+            ok = resp.status_code < 300
+            return {"ok": ok, "status": resp.status_code, "error": None if ok else resp.text[:300]}
+        return {"ok": False, "error": f"'{desc.id}' ({src}) is not editable from the Manager"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}

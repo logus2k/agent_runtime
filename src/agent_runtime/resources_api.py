@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Body, HTTPException, Request
 
-from .resource import act_item, descriptor_by_id, descriptors_json, list_items
+from .resource import act_item, descriptor_by_id, descriptors_json, list_items, update_item
 
 log = logging.getLogger("agent_runtime.resources")
 router = APIRouter(prefix="/resources", tags=["resources"])
@@ -33,6 +33,17 @@ async def list_resource(rid: str, request: Request) -> dict:
     if desc is None:
         raise HTTPException(status_code=404, detail=f"no resource '{rid}'")
     return await list_items(desc, request)
+
+
+@router.put("/{rid}/{key}")
+async def update_resource(rid: str, key: str, request: Request, body: dict = Body(default={})) -> dict:
+    """Update one item from a schema-form body — gated by the `update` capability + `editable`."""
+    desc = descriptor_by_id(rid)
+    if desc is None:
+        raise HTTPException(status_code=404, detail=f"no resource '{rid}'")
+    if "update" not in desc.capabilities or not desc.editable:
+        raise HTTPException(status_code=405, detail=f"'{rid}' is not editable")
+    return await update_item(desc, request, key, body)
 
 
 @router.delete("/{rid}/{key}")
