@@ -37,7 +37,9 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from .config import settings
+from .deploy import SchedulerClient, deploy_project, undeploy_project
 from .dsl import AgentRecord
+from .graph_registry import GraphRegistry
 from .registry import Registry
 
 log = logging.getLogger("agent_runtime.admin")
@@ -51,6 +53,22 @@ def _registry(request: Request) -> Registry:
     if reg is None:
         raise HTTPException(status_code=503, detail="registry not ready")
     return reg
+
+
+def _graph_registry(request: Request) -> GraphRegistry:
+    reg = getattr(request.app.state, "graph_registry", None)
+    if reg is None:
+        raise HTTPException(status_code=503, detail="graph registry not ready")
+    return reg
+
+
+def _scheduler_client(request: Request) -> SchedulerClient:
+    """The scheduler client used by Deploy/Undeploy. Tests inject a fake onto
+    ``app.state.scheduler_client``; otherwise a real one (config base URL) is used."""
+    client = getattr(request.app.state, "scheduler_client", None)
+    if client is None:
+        client = SchedulerClient()
+    return client
 
 
 def _bus(request: Request):
@@ -528,3 +546,104 @@ async def reload(request: Request) -> dict:
     reg = _registry(request)
     reg.load_all()
     return {"ok": True, "agents": reg.ids}
+
+
+# --- projects: deploy / undeploy / delete (§9.3, §9.3.1, §9.4) ----------------
+
+class DeployReq(BaseModel):
+    """A Deploy request body: the Project display name + its composition (a litegraph
+    ``serialize()``-shaped graph of blocks + typed edges). The path carries the Project
+    uid (its identity — the idempotency key)."""
+
+    name: str
+    composition: dict[str, Any]
+
+
+@router.post("/projects/{uid}/deploy")
+async def deploy(uid: str, req: DeployReq, request: Request) -> dict:
+    """Deploy a Patron Project to ONE graph record (§9.3): lower the composition → upsert
+    a ``GraphRecord`` keyed by ``uid`` (create or update-in-place, bump version) → for a
+    schedule-type Trigger initiator, establish the scheduler firing binding (§9.3.1).
+
+    **Advisory validation** (§9.3): warnings are returned but a deploy is NEVER refused.
+    Returns ``{ok, uid, version, warnings[], firing}``. A structurally un-lowerable
+    composition (no blocks at all) is the one hard failure (422)."""
+    from .composer.lower import LoweringError
+
+    if not req.name or not req.name.strip():
+        raise HTTPException(status_code=422, detail="project name is required")
+    try:
+        result = await deploy_project(
+            uid=uid,
+            name=req.name,
+            composition=req.composition,
+            registry=_graph_registry(request),
+            scheduler=_scheduler_client(request),
+        )
+    except LoweringError as exc:
+        # Nothing to deploy at all (empty/blockless composition). This is not advisory —
+        # there is no record to create.
+        raise HTTPException(status_code=422, detail=str(exc))
+    log.info(
+        "deployed project %s '%s' -> version %s (%d warning(s))",
+        uid, req.name, result["version"], len(result["warnings"]),
+    )
+    return {"ok": True, **result}
+
+
+@router.post("/projects/{uid}/undeploy")
+async def undeploy(uid: str, request: Request) -> dict:
+    """Undeploy a Project (§9.4): remove the live ``GraphRecord`` and its firing binding.
+    Source assets stay intact. Idempotent — a missing record is reported, not an error.
+    Returns ``{ok, uid, removed, firing_removed, warnings[]}``."""
+    result = await undeploy_project(
+        uid=uid,
+        registry=_graph_registry(request),
+        scheduler=_scheduler_client(request),
+    )
+    return {"ok": True, **result}
+
+
+@router.delete("/projects/{uid}")
+async def delete_project(uid: str, request: Request) -> dict:
+    """Delete a Project = undeploy it (§9.4): remove the live record + firing binding.
+
+    Per §9.4 the FULL delete flow (asking what to do with each source asset, with
+    cross-project-usage confirmation) is Patron's responsibility — the source assets are
+    reusable and self-ignorant, so the runtime side only tears down the live glue. Returns
+    the same shape as undeploy."""
+    result = await undeploy_project(
+        uid=uid,
+        registry=_graph_registry(request),
+        scheduler=_scheduler_client(request),
+    )
+    return {"ok": True, **result}
+
+
+@router.get("/projects")
+async def list_projects(request: Request) -> dict:
+    """The deployed Project graph records (uid, name, version, node/edge counts)."""
+    reg = _graph_registry(request)
+    return {
+        "projects": [
+            {
+                "uid": r.uid,
+                "name": r.name,
+                "version": r.version,
+                "enabled": r.enabled,
+                "nodes": len(r.nodes),
+                "edges": len(r.edges),
+                "entry": r.entry,
+            }
+            for r in reg.all()
+        ]
+    }
+
+
+@router.get("/projects/{uid}")
+async def get_project(uid: str, request: Request) -> dict:
+    """The deployed graph record for a Project uid (404 if not deployed)."""
+    rec = _graph_registry(request).get(uid)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"no deployed project '{uid}'")
+    return rec.model_dump(mode="json", exclude_none=True)

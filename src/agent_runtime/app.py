@@ -23,6 +23,7 @@ from .composer_api import router as composer_router
 from .resources_api import router as resources_router
 from .config import settings
 from .farm import Farm
+from .graph_registry import GraphRegistry
 from .registry import Registry
 from .runner import Runner
 
@@ -42,15 +43,23 @@ async def lifespan(app: FastAPI):
     registry = Registry(settings.agents_dir)
     registry.load_all()
 
-    farm = Farm(settings, registry)
+    # The graph-record registry (deployed Projects, §9.3) — shared with the admin API's
+    # /admin/projects/* deploy lifecycle AND with the farm, so a deployed Project is live
+    # and firable at once. Created before the farm starts so its routing is wired.
+    graph_registry = GraphRegistry()
+
+    farm = Farm(settings, registry, graph_registry=graph_registry)
     await farm.connect()
     runner = Runner(settings, farm.bus)
     farm.set_handler(runner.run)
+    # Route fired events carrying event_data.record_uid to the deployed GraphRecord (§9.3).
+    farm.set_graph_routing(graph_registry, runner.run_graph_record)
     await farm.start()
     app.state.farm = farm
     # Shared with the admin API (deploy/reload) so a pushed record is live at once.
     app.state.registry = registry
     app.state.agents_dir = settings.agents_dir
+    app.state.graph_registry = graph_registry
     try:
         yield
     finally:

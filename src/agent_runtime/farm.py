@@ -27,6 +27,7 @@ from agent_bus_client import EventEnvelope
 from agent_bus_client.bus import BusClient, Delivery, make_consumer
 
 from .config import Settings
+from .graph_registry import GraphRegistry
 from .registry import Registry
 
 log = logging.getLogger("agent_runtime.farm")
@@ -35,8 +36,12 @@ log = logging.getLogger("agent_runtime.farm")
 # bus/dispatch/idempotency/ack; the handler owns the pipeline (brain→…→delivery).
 AgentHandler = Callable[["AgentRecordRef", EventEnvelope], Awaitable[None]]
 
-# Imported lazily for the type alias above without a hard cycle.
+# A graph handler runs one deployed GraphRecord (a Project, §9.3) for one fired event.
+GraphHandler = Callable[["GraphRecordRef", EventEnvelope], Awaitable[None]]
+
+# Imported lazily for the type aliases above without a hard cycle.
 from .dsl import AgentRecord as AgentRecordRef  # noqa: E402
+from .dsl_graph import GraphRecord as GraphRecordRef  # noqa: E402
 
 
 class Farm:
@@ -47,11 +52,17 @@ class Farm:
         handler: AgentHandler | None = None,
         *,
         bus: BusClient | None = None,
+        graph_registry: GraphRegistry | None = None,
+        graph_handler: GraphHandler | None = None,
     ):
         self._settings = settings
         self._registry = registry
         self._handler = handler
         self._bus = bus
+        # Deployed-Project routing (§9.3): a fired event carrying ``record_uid`` resolves
+        # against the shared GraphRegistry and runs the GraphRecord via graph_handler.
+        self._graph_registry = graph_registry
+        self._graph_handler = graph_handler
         self._consumer = make_consumer(settings.consumer_name)
         self._sem = asyncio.Semaphore(settings.max_concurrency)
         self._jobs: set[asyncio.Task] = set()
@@ -67,6 +78,14 @@ class Farm:
     def set_handler(self, handler: AgentHandler) -> None:
         """Attach the pipeline handler (built after connect so it can use the bus)."""
         self._handler = handler
+
+    def set_graph_routing(
+        self, graph_registry: GraphRegistry, graph_handler: GraphHandler
+    ) -> None:
+        """Attach the deployed-Project routing (§9.3): the shared GraphRegistry a fired
+        event's ``record_uid`` resolves against + the handler that runs a GraphRecord."""
+        self._graph_registry = graph_registry
+        self._graph_handler = graph_handler
 
     # --- lifecycle ----------------------------------------------------------
 
@@ -211,18 +230,20 @@ class Farm:
         env = delivery.envelope
         cid, sid = env.header.cid, env.header.sid
         data = env.payload.data or {}
-        # Route by the immutable uid (agent_uid). Fall back to the friendly name
-        # (legacy `agent`, or `agent_name`) so jobs minted before the uid migration
-        # still resolve. `ref` is just for logs.
+        # A deployed Project (§9.3) fires with ``record_uid`` in event_data — that routes
+        # to the shared GraphRegistry + graph handler. Otherwise route the flat-agent way:
+        # by the immutable uid (agent_uid), falling back to the friendly name (legacy
+        # `agent` / `agent_name`) so pre-uid-migration jobs still resolve. `ref` is for logs.
+        record_uid = data.get("record_uid")
         agent_uid = data.get("agent_uid")
         agent_name = data.get("agent_name") or data.get("agent")
-        ref = agent_uid or agent_name
+        ref = record_uid or agent_uid or agent_name
 
         try:
-            if not agent_uid and not agent_name:
+            if not record_uid and not agent_uid and not agent_name:
                 log.error(
-                    "trigger %s has no 'agent_uid'/'agent' in payload.data (%s) — acking, "
-                    "cannot route", delivery.entry_id, data,
+                    "trigger %s has no 'record_uid'/'agent_uid'/'agent' in payload.data (%s) "
+                    "— acking, cannot route", delivery.entry_id, data,
                 )
                 return  # ack in finally
 
@@ -233,11 +254,45 @@ class Farm:
                 await self.bus.expire(dedupe_key, s.dedupe_ttl_s)
             else:
                 log.info(
-                    "duplicate trigger cid=%s sid=%s (agent=%s) — already processed, "
+                    "duplicate trigger cid=%s sid=%s (ref=%s) — already processed, "
                     "skipping", cid, sid, ref,
                 )
                 return  # ack in finally
 
+            # --- deployed-Project (GraphRecord) path (§9.3) ---
+            if record_uid:
+                if self._graph_registry is None or self._graph_handler is None:
+                    log.error(
+                        "trigger %s carries record_uid=%s but the farm has no graph routing "
+                        "wired — acking, cannot run", delivery.entry_id, record_uid,
+                    )
+                    return  # ack in finally
+                graph_record = self._graph_registry.get(record_uid)
+                if graph_record is None:
+                    log.error(
+                        "trigger %s names unknown graph record (record_uid=%s; known uids: "
+                        "%s) — acking", delivery.entry_id, record_uid,
+                        self._graph_registry.uids,
+                    )
+                    return  # ack in finally
+                if not graph_record.enabled:
+                    log.info(
+                        "project '%s' (%s) is inactive — skipping (cid=%s sid=%s)",
+                        graph_record.name, graph_record.uid, cid, sid,
+                    )
+                    return  # ack in finally
+                async with self._sem:
+                    log.info(
+                        "running project '%s' (%s) (cid=%s sid=%s)",
+                        graph_record.name, graph_record.uid, cid, sid,
+                    )
+                    await asyncio.wait_for(
+                        self._graph_handler(graph_record, env), timeout=s.job_timeout_s
+                    )
+                    log.info("project '%s' completed (cid=%s)", graph_record.name, cid)
+                return  # ack in finally
+
+            # --- flat-agent path (fallback) ---
             record = (
                 self._registry.get(agent_uid) if agent_uid
                 else self._registry.get_by_name(agent_name)

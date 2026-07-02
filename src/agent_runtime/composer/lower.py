@@ -299,3 +299,286 @@ class Graph:
 def lower_graph(serialized: dict[str, Any]) -> dict[str, Any]:
     """Lower a serialized composer graph to the runtime DSL."""
     return Graph(serialized).lower()
+
+
+# --------------------------------------------------------------------------- #
+# Project -> GraphRecord lowering (Phase 05, §9.3).
+#
+# A Patron **Project** (a composition of blocks + typed edges, litegraph
+# ``serialize()`` shape) lowers 1:1 to a single ``GraphRecord`` (dsl_graph):
+# agents/rag/guardrails/destinations are NODES, the initiator is the entry node,
+# and the composition's links become typed EDGES. Unlike ``lower()`` (which
+# collapses to a flat single-agent ``AgentRecord``), this preserves the graph
+# form: N agents, fan-in/fan-out, multiple destinations (§7.2).
+#
+# Validation is **advisory** (§9.3): warnings are computed and returned but a
+# deploy is NEVER refused — the record is always built if it can be built at all.
+# --------------------------------------------------------------------------- #
+
+# Composition node type (== Block.kind) -> GraphRecord node kind. Only the kinds the
+# GraphRecord model + graph executor understand are mapped here; anything else (e.g.
+# ``transform``, which is inert in the runtime record) is UNSUPPORTED — it is skipped
+# with an advisory warning rather than crashing the deploy (§9.3).
+_KIND_MAP: dict[str, str] = {
+    "trigger": "initiator",
+    "agent": "agent",
+    "rag": "rag",
+    "guardrail": "guardrail",
+    "whatsapp": "destination",
+    "tts": "destination",
+    "bus": "destination",
+}
+
+# Composition block kinds that are recognized but produce NO runtime GraphRecord node —
+# they lower to nothing (inert) and are skipped-with-warning, never a crash (§9.3). A real
+# Transform needs graph-form Transform support; in the flat/graph record it carries no node.
+_INERT_KINDS = {"transform"}
+
+# Kinds that are valid firing entry points (initiators, §9.3.1).
+_INITIATOR_KINDS = {"trigger"}
+_DEST_KINDS = {"whatsapp", "tts", "bus"}
+
+
+class ProjectLowering:
+    """Lower a Patron Project composition into a ``GraphRecord`` + advisory warnings.
+
+    Kept as a class so the intermediate maps (node id -> block, node id -> stable
+    graph node id) are shared by the record build and the warning computation.
+    """
+
+    def __init__(self, uid: str, name: str, composition: dict[str, Any]) -> None:
+        self._uid = uid
+        self._name = name
+        self._graph = Graph(composition or {})
+        # Stable per-composition node id: "<type>:<litegraph id>" (unique + readable),
+        # matching the IR node_key convention so a GraphRecord node id is traceable
+        # back to its canvas block.
+        self._gid: dict[Any, str] = {}
+        for n in self._graph.nodes:
+            self._gid[n.get("id")] = f"{n.get('type')}:{n.get('id')}"
+
+    # ---- helpers ----
+    def _initiators(self) -> list[dict[str, Any]]:
+        return [n for n in self._graph.nodes if n.get("type") in _INITIATOR_KINDS]
+
+    def _asset_ref(self, node: dict[str, Any]) -> Optional[str]:
+        """The bound asset id for a node (§9.2): the pointer to what fills the slot."""
+        kind = node.get("type")
+        props = Graph._props(node)
+        if kind == "trigger":
+            # The initiator binds the schedule that fires this Project; its firing IS
+            # the Project's firing (§9.3.1). The composition carries the intended
+            # schedule id under agent_id (legacy) — kept as the firing asset ref.
+            return props.get("agent_id") or None
+        if kind == "agent":
+            return props.get("persona") or None
+        if kind in _DEST_KINDS:
+            return props.get("target") or None
+        return None
+
+    # ---- the lowering ----
+    def build(self) -> tuple["GraphRecordT", list[str]]:
+        from ..dsl_graph import GraphEdge, GraphNode, GraphRecord
+
+        warnings = self.warnings()  # computed on the raw composition (before build)
+
+        nodes: list[Any] = []
+        edges: list[Any] = []
+        for n in self._graph.nodes:
+            comp_kind = n.get("type")
+            node_kind = _KIND_MAP.get(comp_kind)
+            if node_kind is None:
+                # Unknown block type: skip it (warned already) rather than crash.
+                continue
+            block = self._graph._block(n)
+            config: dict[str, Any] = {}
+            if block is not None:
+                frag = block.lower()
+                if comp_kind == "agent":
+                    config = {"record": self._graph._agent_record(n, frag)}
+                elif comp_kind == "trigger":
+                    config = dict(frag.get("trigger", {}))
+                elif comp_kind in _DEST_KINDS:
+                    config = dict(frag.get("delivery", {}))
+                else:
+                    config = dict(frag)
+            nodes.append(
+                GraphNode(
+                    id=self._gid[n.get("id")],
+                    kind=node_kind,  # type: ignore[arg-type]
+                    asset_ref=self._asset_ref(n),
+                    config=config,
+                )
+            )
+
+        gid_set = set(self._gid.values())
+        known_kind_ids = {self._gid[n.get("id")] for n in self._graph.nodes
+                          if _KIND_MAP.get(n.get("type")) is not None}
+        for lk in self._graph.links:
+            if len(lk) < 4:
+                continue
+            src = self._gid.get(lk[1])
+            dst = self._gid.get(lk[3])
+            # Only keep edges whose BOTH ends became real nodes (skipped unknown blocks
+            # drop their edges — warned, never crash).
+            if src in known_kind_ids and dst in known_kind_ids:
+                port = self._graph._out_slot_label(self._graph._node(lk[1]), lk[2])
+                edges.append(GraphEdge(src=src, dst=dst, port=port))
+
+        # A record needs >=1 node. If the composition has NO lowerable blocks at all, we
+        # cannot build a record; this is the ONE hard failure (§9.3) — the caller turns it
+        # into a 422. (An unsupported/inert-only composition also lands here.)
+        if not nodes:
+            raise LoweringError(
+                "composition has no lowerable blocks — nothing to deploy"
+            )
+
+        # Pick the entry (§9.3.1): the single initiator if there is exactly one; else the
+        # first initiator if several. With NO initiator, let the GraphRecord derive it (the
+        # single node with no incoming edge). If derivation would ALSO fail (no initiator +
+        # multiple roots), we still must NOT crash (advisory-only) — fall back to the first
+        # lowered node as the entry so the record validates. The "no initiator" /
+        # "multiple roots" condition is already surfaced as a warning (see ``warnings()``).
+        entry: Optional[str] = None
+        node_ids = [n.id for n in nodes]
+        inits = self._initiators()
+        init_ids = [self._gid[i.get("id")] for i in inits if self._gid[i.get("id")] in node_ids]
+        if init_ids:
+            entry = init_ids[0]
+        else:
+            has_incoming = {e.dst for e in edges}
+            roots = [nid for nid in node_ids if nid not in has_incoming]
+            # Exactly one root -> the GraphRecord will derive it; leave entry=None.
+            # Zero or multiple roots -> derivation would raise, so pin the entry to the
+            # first node (warned, never crash).
+            entry = None if len(roots) == 1 else node_ids[0]
+
+        record = GraphRecord(
+            version=DSL_VERSION,
+            uid=self._uid,
+            name=self._name,
+            enabled=True,
+            entry=entry,
+            nodes=nodes,
+            edges=edges,
+        )
+        return record, warnings
+
+    # ---- advisory validation (§9.3): warn, never refuse ----
+    def warnings(self) -> list[str]:
+        w: list[str] = []
+        g = self._graph
+        nodes = g.nodes
+
+        # 1) no initiator -> the Project can never fire (§9.3).
+        inits = self._initiators()
+        if not inits:
+            w.append(
+                "no initiator: this composition has no Trigger, so it can never fire"
+            )
+        elif len(inits) > 1:
+            # Multiple initiators are legal (§7.2) but worth flagging on a Trigger deploy.
+            w.append(
+                f"{len(inits)} initiators present; the firing binding is created for the "
+                "first schedule-type Trigger only"
+            )
+
+        # 1b) no single entry root: with no initiator to pin the entry, a composition whose
+        # lowerable nodes have more than one (or zero) roots cannot derive a single entry
+        # (§9.3.1). This is advisory — deploy pins a fallback entry and warns, never refuses.
+        if not inits:
+            lowerable = [n for n in nodes if _KIND_MAP.get(n.get("type")) is not None]
+            has_incoming = {lk[3] for lk in g.links if len(lk) >= 4}
+            roots = [n for n in lowerable if n.get("id") not in has_incoming]
+            if len(roots) > 1:
+                labels = sorted(f"{n.get('type')}:{n.get('id')}" for n in roots)
+                w.append(
+                    f"multiple roots and no initiator: {labels} have no incoming edge, so no "
+                    "single entry point can be derived (a fallback entry is used)"
+                )
+
+        # 2) unknown / unbound / missing-required-config blocks.
+        has_incoming = {lk[3] for lk in g.links if len(lk) >= 4}
+        has_outgoing = {lk[1] for lk in g.links if len(lk) >= 4}
+        for n in nodes:
+            nid = n.get("id")
+            kind = n.get("type")
+            label = f"{kind}:{nid}"
+            if _KIND_MAP.get(kind) is None:
+                if kind in _INERT_KINDS:
+                    w.append(
+                        f"unsupported block type '{kind}' ({label}) — it produces no runtime "
+                        "node and will be skipped"
+                    )
+                else:
+                    w.append(f"unknown block type '{kind}' ({label}) — it will be dropped")
+                continue
+            block = g._block(n)
+            if block is not None:
+                for err in block.validate():
+                    w.append(f"missing/invalid config on {label}: {err}")
+            # unbound: a block with no asset binding where one is expected.
+            if kind in ("agent",) and not self._asset_ref(n):
+                w.append(f"unbound block {label}: no persona/asset selected")
+            if kind in _DEST_KINDS and not self._asset_ref(n):
+                w.append(f"unbound block {label}: no destination target selected")
+            # a non-initiator, non-destination block wired to nothing on either side.
+            if (
+                kind not in _INITIATOR_KINDS
+                and kind not in _DEST_KINDS
+                and nid not in has_incoming
+                and nid not in has_outgoing
+            ):
+                w.append(f"unwired block {label}: not connected to anything")
+
+        # 3) type-incompatible edges: a link whose endpoints' declared port schemas
+        # do not match (advisory — the runtime tolerates str->str; a real mismatch is
+        # a design smell worth surfacing).
+        w.extend(self._edge_type_warnings())
+        return w
+
+    def _edge_type_warnings(self) -> list[str]:
+        """Flag links whose source out-port schema is incompatible with the target
+        in-port schema. Uses each block's declared ``get_schema()`` ports."""
+        out: list[str] = []
+        for lk in self._graph.links:
+            if len(lk) < 5:
+                continue
+            src_node = self._graph._node(lk[1])
+            dst_node = self._graph._node(lk[3])
+            if src_node is None or dst_node is None:
+                continue
+            src_block = self._graph._block(src_node)
+            dst_block = self._graph._block(dst_node)
+            if src_block is None or dst_block is None:
+                continue
+            src_outs = src_block.ports("out")
+            dst_ins = dst_block.ports("in")
+            try:
+                src_schema = src_outs[int(lk[2])].schema
+                dst_schema = dst_ins[int(lk[4])].schema
+            except (IndexError, TypeError, ValueError, AttributeError):
+                continue
+            # Structural sub-typing (schema.DataSchema): the source out-port must be
+            # able to feed the target in-port. ANY is a wildcard on either side.
+            if not src_schema.is_compatible_with(dst_schema):
+                out.append(
+                    f"type-incompatible edge {src_node.get('type')}:{src_node.get('id')}"
+                    f" -> {dst_node.get('type')}:{dst_node.get('id')}: "
+                    f"{src_schema.type} is not assignable to {dst_schema.type}"
+                )
+        return out
+
+
+# A lightweight alias for the return type without importing at module scope (avoids a
+# circular import: dsl_graph does not import lower, so this is only a type hint aid).
+GraphRecordT = Any
+
+
+def lower_project(
+    uid: str, name: str, composition: dict[str, Any]
+) -> tuple["GraphRecordT", list[str]]:
+    """Lower a Patron Project composition into one ``GraphRecord`` keyed by ``uid``,
+    plus advisory warnings (§9.3). Raises ``LoweringError`` only if there is literally
+    nothing to deploy (no lowerable blocks)."""
+    return ProjectLowering(uid, name, composition).build()

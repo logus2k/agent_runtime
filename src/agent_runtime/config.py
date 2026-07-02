@@ -92,8 +92,11 @@ class Settings:
     whatsapp_agent_name: str = _str("WHATSAPP_AGENT_NAME", "news-agent")
     whatsapp_token: str = _str("WHATSAPP_TOKEN", "")  # secret — env only, never the DSL
     # Scheduler admin API — read-only, for the admin UI's consistency view (which jobs
-    # target which agents). Reachable on logus2k_network. Joined server-side to dodge CORS.
+    # target which agents), AND the Deploy firing binding (Schedule + Binding upsert,
+    # §9.3.1). Reachable on logus2k_network. Joined server-side to dodge CORS.
     scheduler_url: str = _str("SCHEDULER_URL", "http://agent-scheduler-app:6816")
+    # HTTP timeout for the Deploy-time scheduler calls (schedule/binding upsert).
+    scheduler_timeout_s: int = _int("SCHEDULER_TIMEOUT_S", 10)
 
     # --- Bus identity + run-event observability ---
     sender_id: str = _str("SENDER_ID", "agent-runtime")
