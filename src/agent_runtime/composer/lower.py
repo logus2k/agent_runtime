@@ -33,7 +33,7 @@ DSL_VERSION = "0.1"
 
 TRIGGER_KIND = "trigger"
 AGENT_KIND = "agent"
-DEST_KINDS = {"whatsapp", "tts", "bus"}
+DEST_KINDS = {"whatsapp", "tts", "bus", "file_destination", "web_destination"}
 # Blocks that may sit between the agent and its destination as pass-throughs in the
 # LINEAR lowering (they carry no flat-record field; a real Transform needs the graph
 # form to be represented — it is inert in the flat record).
@@ -321,12 +321,19 @@ def lower_graph(serialized: dict[str, Any]) -> dict[str, Any]:
 # with an advisory warning rather than crashing the deploy (§9.3).
 _KIND_MAP: dict[str, str] = {
     "trigger": "initiator",
+    # New boundary SOURCES (§9.3.1) — all lower to the initiator graph-node kind.
+    "file_initiator": "initiator",
+    "web_initiator": "initiator",
+    "stt_initiator": "initiator",
     "agent": "agent",
     "rag": "rag",
     "guardrail": "guardrail",
     "whatsapp": "destination",
     "tts": "destination",
     "bus": "destination",
+    # New SINKS (§8) — File writes a file; Web calls an outbound API.
+    "file_destination": "destination",
+    "web_destination": "destination",
 }
 
 # Composition block kinds that are recognized but produce NO runtime GraphRecord node —

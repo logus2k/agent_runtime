@@ -21,10 +21,15 @@ from .blocks import (
     Branch,
     Bus,
     Composite,
+    FileDestination,
+    FileInitiator,
     Loop,
+    SttInitiator,
     TTS,
     Transform,
     Trigger,
+    WebDestination,
+    WebInitiator,
     WhatsApp,
 )
 
@@ -37,9 +42,16 @@ BLOCK_TYPES: dict[str, type[Block]] = {
     Branch.kind: Branch,
     Loop.kind: Loop,
     Composite.kind: Composite,
+    # New boundary SOURCES (§9.3.1) — out-only initiators, inert in graph execution.
+    FileInitiator.kind: FileInitiator,
+    WebInitiator.kind: WebInitiator,
+    SttInitiator.kind: SttInitiator,
     WhatsApp.kind: WhatsApp,
     TTS.kind: TTS,
     Bus.kind: Bus,
+    # New SINKS (§8) — File writes a file; Web calls an outbound API.
+    FileDestination.kind: FileDestination,
+    WebDestination.kind: WebDestination,
 }
 
 

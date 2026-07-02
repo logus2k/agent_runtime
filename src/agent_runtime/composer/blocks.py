@@ -433,6 +433,107 @@ class Trigger(Activity):
         }
 
 
+# --------------------------------------------------------------------------- #
+# New boundary SOURCES (§8, §9.3.1): File / Web / Speech-to-Text initiators.
+#
+# These are boundary sources exactly like ``Trigger`` — ``out`` only, and INERT in the
+# graph execution: they carry NO flat-record field and do no work at run time. Their
+# firing happens EXTERNALLY (a folder-watch service, an HTTP-ingress service, an STT
+# front-end) which emits the bus event that drives the farm; the block only carries the
+# *binding* to that external source (the watched path, the route, the STT stream id).
+#
+# They lower to the ``initiator`` graph-node kind (§9.3.1) — several INDEPENDENT
+# initiator block types, no "family" abstraction. The base collects the shared shape.
+# --------------------------------------------------------------------------- #
+class Initiator(Activity):
+    """Base for a boundary source that fires the workflow from OUTSIDE. ``out`` only;
+    inert in graph execution. Subclasses declare their own binding config; all lower to
+    a ``trigger`` fragment whose ``type`` is ``channel`` (event-driven, not a schedule).
+
+    A subclass sets ``kind``/``label`` and (optionally) extends ``get_schema``'s config
+    with its own binding fields (watched path, route, stream id)."""
+
+    category = "Activity"
+    label = "Initiator"
+
+    # Extra binding fields the concrete initiator adds beyond agent_id (subclass hook).
+    def _binding_fields(self) -> list[ConfigField]:
+        return []
+
+    def get_schema(self) -> BlockSchema:
+        return BlockSchema(
+            kind=self.kind,
+            category=self.category,
+            label=self.label,
+            ports=[Port("out", "out", STRING)],
+            config=[
+                ConfigField("agent_id", "string", control="text", label="agent id",
+                            placeholder="the workflow this source fires (bound at deploy)"),
+                *self._binding_fields(),
+            ],
+        )
+
+    def lower(self) -> dict[str, Any]:
+        # Boundary source: contributes the record id + a channel-type trigger. The
+        # per-source binding (path/route/stream) is management-plane detail, carried on
+        # the graph node's config, NOT in the flat runtime record (which has no field for
+        # it) — hence inert here beyond id + trigger.
+        return {
+            "id": self.cfg("agent_id", "untitled-agent"),
+            "trigger": {"type": "channel"},
+        }
+
+
+class FileInitiator(Initiator):
+    """Fires when a new/changed file is detected in a watched folder (e.g. PDF →
+    vector-DB ingestion), §9.3.1. Backed by an external folder-watch service that emits
+    the bus event; this block only carries the watch binding."""
+
+    kind = "file_initiator"
+    label = "File Initiator"
+
+    def _binding_fields(self) -> list[ConfigField]:
+        return [
+            ConfigField("watch_path", "string", required=True, control="text",
+                        label="watch path", placeholder="/data/inbox"),
+            ConfigField("match", "string", control="text", label="match patterns",
+                        placeholder="*.pdf, *.txt"),
+        ]
+
+
+class WebInitiator(Initiator):
+    """Fires when a request hits a configured HTTP route (expose a workflow to web
+    clients/services), §9.3.1. Backed by an external HTTP-ingress service. "Web" does
+    NOT imply public — auth/exposure live at the nginx/OAuth2Proxy edge, not here."""
+
+    kind = "web_initiator"
+    label = "Web Initiator"
+
+    def _binding_fields(self) -> list[ConfigField]:
+        return [
+            ConfigField("route", "string", required=True, control="text",
+                        label="route", placeholder="/hooks/my-workflow"),
+            ConfigField("method", "enum", values=["POST", "GET", "PUT"], default="POST",
+                        control="select", label="method"),
+        ]
+
+
+class SttInitiator(Initiator):
+    """Fires when a speech-to-text front-end produces a transcript. Boundary source; the
+    external STT service emits the bus event with the transcript as the seed task."""
+
+    kind = "stt_initiator"
+    label = "Speech-to-Text"
+
+    def _binding_fields(self) -> list[ConfigField]:
+        return [
+            ConfigField("stream_id", "string", required=True, control="text",
+                        label="stream id", placeholder="the STT stream this listens on"),
+            ConfigField("language", "string", control="text", label="language",
+                        placeholder="e.g. en, pt"),
+        ]
+
+
 class Transform(Activity):
     """A deterministic map ``in: schemaA -> out: schemaB``. Its body can be LLM-
     generated from the two port schemas (§6 codegen). Inert when the schemas already
@@ -648,3 +749,64 @@ class Bus(Destination):
     kind = "bus"
     label = "Bus"
     channel = "bus"
+
+
+# --------------------------------------------------------------------------- #
+# New SINKS (§8, §7.1): File / Web destinations. In-only sinks like the other
+# Destinations — File writes the outcome to a file; Web calls an outbound Web API with
+# the outcome. Both lower to ``delivery: {channel, target}`` (the routing key is the
+# path / URL) and are delivered by the executor's destination handler (mocked IO in
+# tests). Distinct from the File/Web *initiators* (which fire the workflow, above).
+# --------------------------------------------------------------------------- #
+class FileDestination(Destination):
+    """Writes the workflow outcome to a file (§8). ``target`` is the file path."""
+
+    kind = "file_destination"
+    label = "File Destination"
+    channel = "file"
+
+    def get_schema(self) -> BlockSchema:
+        return BlockSchema(
+            kind=self.kind,
+            category=self.category,
+            label=self.label,
+            ports=[Port("in", "in", STRING)],
+            config=[
+                ConfigField("target", "string", required=True, control="text",
+                            label="file path", placeholder="/data/out/result.txt"),
+                ConfigField("mode", "enum", values=["overwrite", "append"],
+                            default="overwrite", control="select", label="write mode"),
+            ],
+        )
+
+    def lower(self) -> dict[str, Any]:
+        delivery = super().lower()["delivery"]
+        delivery["mode"] = self.cfg("mode", "overwrite") or "overwrite"
+        return {"delivery": delivery}
+
+
+class WebDestination(Destination):
+    """Calls an outbound Web API with the workflow outcome (§8). ``target`` is the URL."""
+
+    kind = "web_destination"
+    label = "Web Destination"
+    channel = "web"
+
+    def get_schema(self) -> BlockSchema:
+        return BlockSchema(
+            kind=self.kind,
+            category=self.category,
+            label=self.label,
+            ports=[Port("in", "in", STRING)],
+            config=[
+                ConfigField("target", "string", required=True, control="text",
+                            label="url", placeholder="https://api.example.com/hook"),
+                ConfigField("method", "enum", values=["POST", "PUT", "PATCH"],
+                            default="POST", control="select", label="method"),
+            ],
+        )
+
+    def lower(self) -> dict[str, Any]:
+        delivery = super().lower()["delivery"]
+        delivery["method"] = self.cfg("method", "POST") or "POST"
+        return {"delivery": delivery}
