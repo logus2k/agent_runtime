@@ -34,7 +34,7 @@ from .dsl import AgentRecord, Brain, Delivery, Guardrails, Judge, Rag
 from .dsl_graph import GraphNode, GraphRecord, from_flat_record
 from .graph_executor import GraphWorkflowExecutor, WalkContext
 from .nodes.brain import run_brain
-from .nodes.delivery import deliver
+from .nodes.delivery import deliver, deliver_file, deliver_web
 from .nodes.guardrail import apply_guardrails
 from .nodes.loop import run_agent_loop
 from .nodes.rag import retrieve_and_inject
@@ -67,11 +67,17 @@ class Runner:
         *,
         agent_server: AgentServerClient | None = None,
         sio_factory=None,
+        file_writer=None,
+        web_caller=None,
     ):
         self._settings = settings
         self._bus = bus
         self._agent_server = agent_server or AgentServerClient(settings.agent_server_url)
         self._sio_factory = sio_factory
+        # Injectable IO seams for the File/Web destinations (§8) so tests mock the
+        # filesystem / HTTP call; None means the real write / request is performed.
+        self._file_writer = file_writer
+        self._web_caller = web_caller
         # The skill registry (§8.3) — loaded once from settings.skills_dir and shared
         # across runs. Failures to load degrade to None (skills simply don't inject).
         self._skills: SkillRegistry | None = None
@@ -359,20 +365,39 @@ class Runner:
             return value
 
         async def h_destination(node: GraphNode, value, ctx: WalkContext):
-            delivery = Delivery(
-                channel=node.config.get("channel") or "bus",
-                target=str(node.config.get("target") or ""),
-                target_name=str(node.config.get("target_name") or ""),
-            )
-            delivery_id = await deliver(
-                delivery, value, settings=s, bus=self._bus,
-                sio_factory=self._sio_factory, cid=cid,
-            )
+            channel = node.config.get("channel") or "bus"
+            target = str(node.config.get("target") or "")
+            # File / Web destinations (§8) are outbound sinks whose channel is NOT one of
+            # the strict Delivery Literals — dispatch them to their own deliverers (with
+            # the injectable IO seams). The runtime channels (whatsapp/bus/tts) go through
+            # the strict Delivery path unchanged.
+            if channel == "file":
+                delivery_id = await deliver_file(
+                    target, str(value),
+                    mode=str(node.config.get("mode") or "overwrite"),
+                    writer=self._file_writer,
+                )
+            elif channel == "web":
+                delivery_id = await deliver_web(
+                    target, str(value),
+                    method=str(node.config.get("method") or "POST"),
+                    caller=self._web_caller,
+                )
+            else:
+                delivery = Delivery(
+                    channel=channel,
+                    target=target,
+                    target_name=str(node.config.get("target_name") or ""),
+                )
+                delivery_id = await deliver(
+                    delivery, value, settings=s, bus=self._bus,
+                    sio_factory=self._sio_factory, cid=cid,
+                )
             await self._emit(
                 cid, "agent.result",
                 {"agent_uid": record.uid, "agent_name": record.name,
                  "output": str(value)[:4000], "delivery_id": delivery_id,
-                 "channel": delivery.channel},
+                 "channel": channel},
             )
             return delivery_id
 

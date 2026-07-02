@@ -36,7 +36,10 @@ from .dsl import AgentRecord, SUPPORTED_MAJOR
 _VERSION_RE = re.compile(r"^(\d+)\.(\d+)$")
 
 # The node kinds the graph executor understands. ``initiator`` is the entry boundary;
-# ``destination`` is a channel sink whose channel is carried in config.
+# ``destination`` is a channel sink whose channel is carried in config. The Phase-08a
+# source blocks (File/Web/STT initiators) all lower to ``initiator`` and the sink blocks
+# (File/Web destinations) all lower to ``destination`` — several block TYPES, one node
+# KIND — so this Literal is unchanged: the specific channel/source lives in node config.
 NodeKind = Literal["initiator", "rag", "guardrail", "agent", "destination"]
 
 

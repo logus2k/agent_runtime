@@ -341,9 +341,11 @@ _KIND_MAP: dict[str, str] = {
 # Transform needs graph-form Transform support; in the flat/graph record it carries no node.
 _INERT_KINDS = {"transform"}
 
-# Kinds that are valid firing entry points (initiators, §9.3.1).
-_INITIATOR_KINDS = {"trigger"}
-_DEST_KINDS = {"whatsapp", "tts", "bus"}
+# Kinds that are valid firing entry points (initiators, §9.3.1). Several INDEPENDENT
+# initiator block types (no "family" abstraction) — schedule Trigger + the new boundary
+# sources, each fired by its own external emitter service.
+_INITIATOR_KINDS = {"trigger", "file_initiator", "web_initiator", "stt_initiator"}
+_DEST_KINDS = {"whatsapp", "tts", "bus", "file_destination", "web_destination"}
 
 
 class ProjectLowering:
@@ -372,10 +374,10 @@ class ProjectLowering:
         """The bound asset id for a node (§9.2): the pointer to what fills the slot."""
         kind = node.get("type")
         props = Graph._props(node)
-        if kind == "trigger":
-            # The initiator binds the schedule that fires this Project; its firing IS
-            # the Project's firing (§9.3.1). The composition carries the intended
-            # schedule id under agent_id (legacy) — kept as the firing asset ref.
+        if kind in _INITIATOR_KINDS:
+            # The initiator binds the source that fires this Project; its firing IS the
+            # Project's firing (§9.3.1). The composition carries the intended source id
+            # under agent_id — kept as the firing asset ref (schedule / watch / route).
             return props.get("agent_id") or None
         if kind == "agent":
             return props.get("persona") or None
@@ -403,7 +405,7 @@ class ProjectLowering:
                 frag = block.lower()
                 if comp_kind == "agent":
                     config = {"record": self._graph._agent_record(n, frag)}
-                elif comp_kind == "trigger":
+                elif comp_kind in _INITIATOR_KINDS:
                     config = dict(frag.get("trigger", {}))
                 elif comp_kind in _DEST_KINDS:
                     config = dict(frag.get("delivery", {}))

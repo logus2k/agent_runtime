@@ -47,6 +47,64 @@ async def deliver(
     raise DeliveryError(f"unsupported delivery channel: {channel!r}")
 
 
+async def deliver_file(
+    path: str,
+    text: str,
+    *,
+    mode: str = "overwrite",
+    writer: Callable[[str, str, str], str] | None = None,
+) -> str:
+    """Write ``text`` to a file at ``path`` (§8 File Destination). ``mode`` is
+    ``overwrite`` or ``append``. ``writer`` is an injectable IO seam (path, text, mode)
+    -> id so tests mock the filesystem; the default performs the real write. Returns the
+    path written. Raises DeliveryError on any IO failure (never a silent drop)."""
+    if not path or not path.strip():
+        raise DeliveryError("file destination: target path is empty")
+    if mode not in ("overwrite", "append"):
+        raise DeliveryError(f"file destination: unsupported mode {mode!r}")
+    if writer is not None:
+        return writer(path, text, mode)
+    try:
+        with open(path, "a" if mode == "append" else "w", encoding="utf-8") as fh:
+            fh.write(text)
+    except OSError as exc:
+        raise DeliveryError(f"file destination: could not write {path}: {exc}") from exc
+    log.info("delivered to file %s (mode=%s, %d chars)", path, mode, len(text))
+    return path
+
+
+async def deliver_web(
+    url: str,
+    text: str,
+    *,
+    method: str = "POST",
+    caller: Callable[[str, str, str], Any] | None = None,
+) -> str:
+    """Call an outbound Web API at ``url`` with ``text`` as the body (§8 Web
+    Destination). ``caller`` is an injectable IO seam (method, url, text) -> id so tests
+    mock the HTTP call; the default performs the real request. Returns a delivery id
+    (the response id/status). Raises DeliveryError on failure."""
+    if not url or not url.strip():
+        raise DeliveryError("web destination: target url is empty")
+    if caller is not None:
+        result = caller(method, url, text)
+        return str(result if result is not None else "")
+    try:
+        import httpx
+    except ImportError as exc:  # pragma: no cover - httpx is a runtime dep
+        raise DeliveryError(
+            "web destination: httpx is required for a live outbound call"
+        ) from exc
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.request(method, url, content=text.encode("utf-8"))
+            resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001 - surfaced loudly as DeliveryError
+        raise DeliveryError(f"web destination: {method} {url} failed: {exc}") from exc
+    log.info("delivered to web %s %s (status=%s)", method, url, resp.status_code)
+    return str(resp.status_code)
+
+
 async def _deliver_whatsapp(
     target_id: str,
     text: str,
