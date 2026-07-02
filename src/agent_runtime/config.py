@@ -110,6 +110,14 @@ class Settings:
     scheduler_url: str = _str("SCHEDULER_URL", "http://agent-scheduler-app:6816")
     # HTTP timeout for the Deploy-time scheduler calls (schedule/binding upsert).
     scheduler_timeout_s: int = _int("SCHEDULER_TIMEOUT_S", 10)
+    # --- Non-schedule initiator services (File/Web/STT) — Deploy auto-wires a Project's
+    # File/Web/STT initiator to the matching service's /bindings (record_uid), the exact
+    # mirror of the scheduler firing binding. Reachable by service name on logus2k_network. ---
+    folder_watch_url: str = _str("FOLDER_WATCH_URL", "http://folder-watch-app:6817")
+    http_ingress_url: str = _str("HTTP_INGRESS_URL", "http://http-ingress-app:6817")
+    # stt-ingress-app listens on 6818 internally (not 6817 like its siblings).
+    stt_ingress_url: str = _str("STT_INGRESS_URL", "http://stt-ingress-app:6818")
+    ingress_timeout_s: int = _int("INGRESS_TIMEOUT_S", 10)
 
     # --- Bus identity + run-event observability ---
     sender_id: str = _str("SENDER_ID", "agent-runtime")

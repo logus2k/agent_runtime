@@ -37,7 +37,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from .config import settings
-from .deploy import SchedulerClient, deploy_project, undeploy_project
+from .deploy import IngressClient, SchedulerClient, deploy_project, undeploy_project
 from .dsl import AgentRecord
 from .graph_registry import GraphRegistry
 from .registry import Registry
@@ -68,6 +68,15 @@ def _scheduler_client(request: Request) -> SchedulerClient:
     client = getattr(request.app.state, "scheduler_client", None)
     if client is None:
         client = SchedulerClient()
+    return client
+
+
+def _ingress_client(request: Request) -> IngressClient:
+    """The File/Web/STT initiator-service client for Deploy/Undeploy. Tests inject a fake
+    onto ``app.state.ingress_client``; otherwise a real one (config base URLs) is used."""
+    client = getattr(request.app.state, "ingress_client", None)
+    if client is None:
+        client = IngressClient()
     return client
 
 
@@ -579,6 +588,7 @@ async def deploy(uid: str, req: DeployReq, request: Request) -> dict:
             composition=req.composition,
             registry=_graph_registry(request),
             scheduler=_scheduler_client(request),
+            ingress=_ingress_client(request),
         )
     except LoweringError as exc:
         # Nothing to deploy at all (empty/blockless composition). This is not advisory —
@@ -600,6 +610,7 @@ async def undeploy(uid: str, request: Request) -> dict:
         uid=uid,
         registry=_graph_registry(request),
         scheduler=_scheduler_client(request),
+        ingress=_ingress_client(request),
     )
     return {"ok": True, **result}
 
@@ -616,6 +627,7 @@ async def delete_project(uid: str, request: Request) -> dict:
         uid=uid,
         registry=_graph_registry(request),
         scheduler=_scheduler_client(request),
+        ingress=_ingress_client(request),
     )
     return {"ok": True, **result}
 

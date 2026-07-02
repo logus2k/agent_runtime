@@ -203,14 +203,45 @@ def _multi_root_no_initiator() -> dict:
 
 
 # --- test app -----------------------------------------------------------------
+class FakeIngress:
+    """Stands in for ``deploy.IngressClient`` — same async surface. Idempotent in-memory
+    per-service binding store keyed by record_uid (one binding per record per service)."""
+
+    def __init__(self) -> None:
+        # service -> {record_uid: payload}
+        self.bindings: dict[str, dict[str, dict]] = {
+            "folder_watch": {}, "http_ingress": {}, "stt_ingress": {}
+        }
+        self.bind_calls: list[tuple[str, str, dict]] = []
+
+    async def bind(self, kind: str, record_uid: str, props: dict) -> dict:
+        # Use the REAL spec so the payload transform (watch_path->path, patterns str->list,
+        # source->source_id) is exercised — the fake only simulates the HTTP store.
+        from agent_runtime.deploy import _INITIATOR_SPECS
+        self.bind_calls.append((kind, record_uid, props))
+        spec = _INITIATOR_SPECS[kind]
+        payload = spec["payload"](record_uid, props)
+        self.bindings[spec["service"]][record_uid] = payload  # overwrite = idempotent
+        return {"service": spec["service"], "payload": payload}
+
+    async def unbind_all(self, record_uid: str):
+        removed = 0
+        for store in self.bindings.values():
+            if store.pop(record_uid, None) is not None:
+                removed += 1
+        return removed, []
+
+
 def _client():
     app = FastAPI()
     app.include_router(admin_router)
     reg = GraphRegistry()
     sched = FakeScheduler()
+    ingress = FakeIngress()
     app.state.graph_registry = reg
     app.state.scheduler_client = sched
-    return TestClient(app), reg, sched
+    app.state.ingress_client = ingress
+    return TestClient(app), reg, sched, ingress
 
 
 PUID = "121c7e15-5f7f-4969-8363-02d6315dd777"
@@ -218,7 +249,7 @@ PUID = "121c7e15-5f7f-4969-8363-02d6315dd777"
 
 # ============================ Deploy ==========================================
 def test_deploy_creates_one_graph_record_and_firing_binding():
-    client, reg, sched = _client()
+    client, reg, sched, ingress = _client()
     r = client.post(
         f"/admin/projects/{PUID}/deploy",
         json={"name": "News Project", "composition": _trigger_agent_whatsapp()},
@@ -249,7 +280,7 @@ def test_deploy_creates_one_graph_record_and_firing_binding():
 
 
 def test_redeploy_after_edit_updates_same_uid_and_bumps_version():
-    client, reg, sched = _client()
+    client, reg, sched, ingress = _client()
     client.post(
         f"/admin/projects/{PUID}/deploy",
         json={"name": "News Project", "composition": _trigger_agent_whatsapp()},
@@ -282,7 +313,7 @@ def test_redeploy_after_edit_updates_same_uid_and_bumps_version():
 
 # ============================ Undeploy / Delete ===============================
 def test_undeploy_removes_record_and_firing_binding():
-    client, reg, sched = _client()
+    client, reg, sched, ingress = _client()
     client.post(
         f"/admin/projects/{PUID}/deploy",
         json={"name": "News Project", "composition": _trigger_agent_whatsapp()},
@@ -309,7 +340,7 @@ def test_undeploy_removes_record_and_firing_binding():
 def test_undeploy_keeps_schedule_that_still_has_other_bindings():
     """If the user added their own binding to the derived schedule, undeploy removes only
     OUR firing binding and leaves the schedule (still non-empty)."""
-    client, reg, sched = _client()
+    client, reg, sched, ingress = _client()
     client.post(
         f"/admin/projects/{PUID}/deploy",
         json={"name": "News Project", "composition": _trigger_agent_whatsapp()},
@@ -325,8 +356,82 @@ def test_undeploy_keeps_schedule_that_still_has_other_bindings():
     assert sched.delete_schedule_calls == []
 
 
+# --- File/Web/STT initiators: Deploy auto-wires the ingress binding -----------
+def _initiator_agent_whatsapp(init_type: str, init_props: dict) -> dict:
+    """A minimal <initiator> -> Agent -> WhatsApp composition."""
+    return {
+        "version": 0.4,
+        "nodes": [
+            {"id": 1, "type": init_type, "properties": init_props,
+             "outputs": [{"name": "out", "links": [1]}]},
+            {"id": 2, "type": "agent",
+             "properties": {"persona": "news_curator", "input_template": "hi"},
+             "inputs": [{"name": "in", "link": 1}], "outputs": [{"name": "out", "links": [2]}]},
+            {"id": 3, "type": "whatsapp", "properties": {"target": "x@g.us"},
+             "inputs": [{"name": "in", "link": 2}]},
+        ],
+        "links": [[1, 1, 0, 2, 0, "string"], [2, 2, 0, 3, 0, "string"]],
+    }
+
+
+def test_deploy_file_initiator_binds_folder_watch():
+    client, reg, sched, ingress = _client()
+    comp = _initiator_agent_whatsapp("file_initiator",
+                                     {"watch_path": "/inbox", "patterns": "*.pdf, *.txt"})
+    body = client.post(f"/admin/projects/{PUID}/deploy",
+                       json={"name": "Filer", "composition": comp}).json()
+    assert body["firing"]["bound"] is True
+    assert body["firing"]["service"] == "folder_watch"
+    # the folder_watch binding was created with our record_uid + mapped props
+    b = ingress.bindings["folder_watch"][PUID]
+    assert b["path"] == "/inbox"
+    assert b["patterns"] == ["*.pdf", "*.txt"]      # free-text split -> list
+    assert sched.upsert_schedule_calls == []        # NOT a scheduler binding
+
+
+def test_deploy_web_initiator_binds_http_ingress():
+    client, reg, sched, ingress = _client()
+    comp = _initiator_agent_whatsapp("web_initiator", {"route": "/hooks/news"})
+    body = client.post(f"/admin/projects/{PUID}/deploy",
+                       json={"name": "Web", "composition": comp}).json()
+    assert body["firing"]["service"] == "http_ingress"
+    b = ingress.bindings["http_ingress"][PUID]
+    assert b["route"] == "/hooks/news" and b["method"] == "POST"
+
+
+def test_deploy_stt_initiator_binds_stt_ingress():
+    client, reg, sched, ingress = _client()
+    comp = _initiator_agent_whatsapp("stt_initiator", {"source": "voice-1"})
+    body = client.post(f"/admin/projects/{PUID}/deploy",
+                       json={"name": "Voice", "composition": comp}).json()
+    assert body["firing"]["service"] == "stt_ingress"
+    assert ingress.bindings["stt_ingress"][PUID]["source_id"] == "voice-1"
+
+
+def test_redeploy_file_initiator_is_idempotent():
+    client, reg, sched, ingress = _client()
+    comp = _initiator_agent_whatsapp("file_initiator", {"watch_path": "/inbox", "patterns": "*"})
+    client.post(f"/admin/projects/{PUID}/deploy", json={"name": "F", "composition": comp})
+    # re-deploy with a CHANGED path → still exactly one binding, updated in place
+    comp2 = _initiator_agent_whatsapp("file_initiator", {"watch_path": "/other", "patterns": "*"})
+    client.post(f"/admin/projects/{PUID}/deploy", json={"name": "F", "composition": comp2})
+    assert list(ingress.bindings["folder_watch"]) == [PUID]        # one binding
+    assert ingress.bindings["folder_watch"][PUID]["path"] == "/other"
+
+
+def test_undeploy_file_initiator_removes_ingress_binding():
+    client, reg, sched, ingress = _client()
+    comp = _initiator_agent_whatsapp("file_initiator", {"watch_path": "/inbox", "patterns": "*"})
+    client.post(f"/admin/projects/{PUID}/deploy", json={"name": "F", "composition": comp})
+    assert PUID in ingress.bindings["folder_watch"]
+
+    body = client.post(f"/admin/projects/{PUID}/undeploy").json()
+    assert body["ingress_removed"] == 1
+    assert PUID not in ingress.bindings["folder_watch"]
+
+
 def test_undeploy_unknown_uid_is_reported_not_error():
-    client, reg, _ = _client()
+    client, reg, _, _ = _client()
     r = client.post(f"/admin/projects/{PUID}/undeploy")
     assert r.status_code == 200
     body = r.json()
@@ -335,7 +440,7 @@ def test_undeploy_unknown_uid_is_reported_not_error():
 
 
 def test_delete_project_undeploys_runtime_side():
-    client, reg, sched = _client()
+    client, reg, sched, ingress = _client()
     client.post(
         f"/admin/projects/{PUID}/deploy",
         json={"name": "News Project", "composition": _trigger_agent_whatsapp()},
@@ -349,7 +454,7 @@ def test_delete_project_undeploys_runtime_side():
 
 # ============================ Advisory validation =============================
 def test_no_initiator_deploys_but_warns():
-    client, reg, sched = _client()
+    client, reg, sched, ingress = _client()
     r = client.post(
         f"/admin/projects/{PUID}/deploy",
         json={"name": "Headless Project", "composition": _no_initiator()},
@@ -366,7 +471,7 @@ def test_no_initiator_deploys_but_warns():
 
 
 def test_unbound_agent_warns_but_still_deploys():
-    client, reg, _ = _client()
+    client, reg, _, _ = _client()
     comp = _trigger_agent_whatsapp()
     # strip the agent's persona binding -> unbound + missing required config.
     for n in comp["nodes"]:
@@ -383,7 +488,7 @@ def test_unbound_agent_warns_but_still_deploys():
 
 
 def test_empty_composition_is_the_one_hard_failure():
-    client, _, _ = _client()
+    client, _, _, _ = _client()
     r = client.post(
         f"/admin/projects/{PUID}/deploy",
         json={"name": "Empty", "composition": {"nodes": [], "links": []}},
@@ -396,7 +501,7 @@ def test_transform_block_deploys_with_warning_not_500():
     """DEFECT 1: a composition containing a Transform block must NOT crash deploy with an
     uncaught pydantic ValidationError -> 500. Per §9.3 it becomes a WARNING; the Transform
     is skipped and the rest of the record still deploys (200)."""
-    client, reg, _ = _client()
+    client, reg, _, _ = _client()
     r = client.post(
         f"/admin/projects/{PUID}/deploy",
         json={"name": "With Transform", "composition": _with_transform()},
@@ -417,7 +522,7 @@ def test_multi_root_no_initiator_deploys_with_warning_not_500():
     """DEFECT 2: a no-initiator composition with more than one root node must NOT crash
     deploy with a GraphRecord 'cannot derive a single entry' ValidationError -> 500. Per
     §9.3 it becomes a WARNING and deploys anyway (200), with a fallback entry pinned."""
-    client, reg, _ = _client()
+    client, reg, _, _ = _client()
     r = client.post(
         f"/admin/projects/{PUID}/deploy",
         json={"name": "Multi Root", "composition": _multi_root_no_initiator()},
@@ -434,7 +539,7 @@ def test_multi_root_no_initiator_deploys_with_warning_not_500():
 
 # ============================ List / get ======================================
 def test_list_and_get_deployed_projects():
-    client, _, _ = _client()
+    client, _, _, _ = _client()
     client.post(
         f"/admin/projects/{PUID}/deploy",
         json={"name": "News Project", "composition": _trigger_agent_whatsapp()},
