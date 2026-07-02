@@ -38,6 +38,7 @@ class FakeScheduler:
         self.upsert_schedule_calls: list[dict[str, Any]] = []
         self.upsert_binding_calls: list[dict[str, Any]] = []
         self.delete_binding_calls: list[tuple[str, str]] = []
+        self.delete_schedule_calls: list[str] = []
 
     async def upsert_schedule(self, schedule_id: str, *, cron: str, timezone: str = "") -> dict:
         self.upsert_schedule_calls.append(
@@ -66,6 +67,15 @@ class FakeScheduler:
     async def delete_binding(self, schedule_id: str, binding_id: str) -> bool:
         self.delete_binding_calls.append((schedule_id, binding_id))
         return self.bindings.pop(binding_id, None) is not None
+
+    async def count_bindings(self, schedule_id: str):
+        if schedule_id not in self.schedules:
+            return None
+        return sum(1 for b in self.bindings.values() if b.get("schedule_id") == schedule_id)
+
+    async def delete_schedule(self, schedule_id: str) -> bool:
+        self.delete_schedule_calls.append(schedule_id)
+        return self.schedules.pop(schedule_id, None) is not None
 
 
 # --- composition builders (litegraph serialize() shape) -----------------------
@@ -290,6 +300,29 @@ def test_undeploy_removes_record_and_firing_binding():
     assert reg.uids == []
     assert sched.bindings == {}
     assert sched.delete_binding_calls  # the scheduler was asked to remove it
+    # the DERIVED schedule was also removed (no bindings left → no orphaned shell).
+    assert body["schedule_removed"] is True
+    assert sched.delete_schedule_calls
+    assert sched.schedules == {}
+
+
+def test_undeploy_keeps_schedule_that_still_has_other_bindings():
+    """If the user added their own binding to the derived schedule, undeploy removes only
+    OUR firing binding and leaves the schedule (still non-empty)."""
+    client, reg, sched = _client()
+    client.post(
+        f"/admin/projects/{PUID}/deploy",
+        json={"name": "News Project", "composition": _trigger_agent_whatsapp()},
+    )
+    sched_id = next(iter(sched.schedules))
+    # a second, user-owned binding on the same schedule
+    sched.bindings["user-extra"] = {"schedule_id": sched_id}
+
+    body = client.post(f"/admin/projects/{PUID}/undeploy").json()
+    assert body["firing_removed"] is True
+    assert body["schedule_removed"] is False        # still has the user binding
+    assert sched_id in sched.schedules
+    assert sched.delete_schedule_calls == []
 
 
 def test_undeploy_unknown_uid_is_reported_not_error():

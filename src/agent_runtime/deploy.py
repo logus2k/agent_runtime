@@ -135,6 +135,27 @@ class SchedulerClient:
             resp.raise_for_status()
             return True
 
+    async def count_bindings(self, schedule_id: str) -> Optional[int]:
+        """How many bindings the schedule still has, or None if the schedule is gone
+        (404). Used by undeploy to decide whether the derived schedule is now empty."""
+        async with await self._client() as client:
+            resp = await client.get(f"/schedules/{schedule_id}/bindings")
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+            return len(data) if isinstance(data, list) else 0
+
+    async def delete_schedule(self, schedule_id: str) -> bool:
+        """Remove the derived ``proj-<uid>`` schedule. Returns True if it existed,
+        False on 404 (idempotent)."""
+        async with await self._client() as client:
+            resp = await client.delete(f"/schedules/{schedule_id}")
+            if resp.status_code == 404:
+                return False
+            resp.raise_for_status()
+            return True
+
 
 def _find_schedule_initiator(composition: dict[str, Any]) -> Optional[dict[str, Any]]:
     """The FIRST schedule-type Trigger node in the composition, or None. Its firing
@@ -224,31 +245,41 @@ async def undeploy_project(
     registry: GraphRegistry,
     scheduler: SchedulerClient,
 ) -> dict[str, Any]:
-    """Undeploy: remove the live GraphRecord AND its firing binding (§9.4). Source assets
-    (schedule, profiles, destinations) are left intact. Idempotent — a missing record or
-    binding is reported, not an error.
+    """Undeploy: remove the live GraphRecord AND its firing binding (§9.4). The DERIVED
+    ``proj-<uid>`` schedule is also removed **once it has no bindings left** — it was
+    created by Deploy, so leaving an empty shell behind is orphaned clutter. If the user
+    added their own extra bindings to it, the schedule is kept (it still has bindings).
+    Author-owned source assets (agent profiles, destinations) are always left intact.
+    Idempotent — a missing record/binding/schedule is reported, not an error.
 
-    Returns ``{uid, removed, firing_removed, warnings}``."""
+    Returns ``{uid, removed, firing_removed, schedule_removed, warnings}``."""
     removed = registry.delete(uid)
     warnings: list[str] = []
     sched_id = schedule_id_for(uid)
     bind_id = binding_id_for(uid)
     firing_removed = False
+    schedule_removed = False
     try:
         firing_removed = await scheduler.delete_binding(sched_id, bind_id)
+        # Clean up the derived schedule iff it's now empty (never delete one that still
+        # carries other bindings the user may have added).
+        remaining = await scheduler.count_bindings(sched_id)
+        if remaining == 0:
+            schedule_removed = await scheduler.delete_schedule(sched_id)
     except httpx.HTTPError as exc:
-        msg = f"scheduler binding removal failed: {exc}"
+        msg = f"scheduler cleanup failed: {exc}"
         log.error("undeploy %s: %s", uid, msg)
         warnings.append(msg)
     if not removed:
         warnings.append(f"no live graph record for uid '{uid}' (already undeployed?)")
     log.info(
-        "undeploy %s: record removed=%s, firing binding removed=%s",
-        uid, removed, firing_removed,
+        "undeploy %s: record removed=%s, firing binding removed=%s, schedule removed=%s",
+        uid, removed, firing_removed, schedule_removed,
     )
     return {
         "uid": uid,
         "removed": removed,
         "firing_removed": firing_removed,
+        "schedule_removed": schedule_removed,
         "warnings": warnings,
     }

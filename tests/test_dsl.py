@@ -35,16 +35,32 @@ def _base(**over) -> dict:
 
 # --- happy path -------------------------------------------------------------
 
-def test_repo_records_load():
-    """Whatever records ship in data/agents validate and load cleanly. Name-agnostic on
-    purpose — the live data is admin-editable, so the test must not hardcode a name."""
-    reg = Registry(REPO / "data" / "agents")
-    records = reg.load_all()
+def test_records_load_cleanly(tmp_path):
+    """A well-formed flat record validates and loads. Uses a fixture (NOT data/agents,
+    which is admin-editable and — since the News Agent migrated to the graph form — may
+    legitimately be empty)."""
+    _write(tmp_path, "one.yaml", f"""
+        version: "0.1"
+        uid: {UID}
+        name: news
+        brain: {{ persona: news_curator }}
+        delivery: {{ channel: whatsapp, target: "1@g.us" }}
+    """)
+    records = Registry(tmp_path).load_all()
     assert len(records) >= 1
     for rec in records.values():
         assert rec.version.startswith("0.")
         assert rec.name and rec.brain.persona
         assert rec.delivery.channel in ("whatsapp", "bus", "tts")
+
+
+def test_repo_records_dir_all_valid_if_present():
+    """Whatever records ship in data/agents (may be none post-migration) must all be
+    valid — a broken shipped record is a real failure, an empty dir is fine."""
+    records = Registry(REPO / "data" / "agents").load_all()
+    for rec in records.values():
+        assert rec.version.startswith("0.")
+        assert rec.name and rec.brain.persona
         assert rec.enabled in (True, False)  # the field exists / defaults
 
 
@@ -111,8 +127,15 @@ def test_registry_rejects_duplicate_uids(tmp_path):
     assert "duplicate" in str(ei.value).lower()
 
 
-def test_registry_keys_by_uid_and_name():
-    reg = Registry(REPO / "data" / "agents")
+def test_registry_keys_by_uid_and_name(tmp_path):
+    _write(tmp_path, "one.yaml", f"""
+        version: "0.1"
+        uid: {UID}
+        name: news
+        brain: {{ persona: p }}
+        delivery: {{ channel: bus, target: t }}
+    """)
+    reg = Registry(tmp_path)
     reg.load_all()
     rec = reg.all()[0]
     assert reg.get(rec.uid) is rec          # keyed by uid
