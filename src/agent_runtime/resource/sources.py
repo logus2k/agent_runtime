@@ -39,6 +39,13 @@ async def list_items(desc: ResourceDescriptor, request: Request) -> dict[str, An
             d = await _fetch_whatsapp_targets()
             return {"ok": bool(d.get("bridge_ok")), "items": d.get("targets", []), "error": d.get("error")}
 
+        if src == "skill":  # skills, from Agent Runtime's OWN registry (§8.3)
+            from ..skills.registry import get_registry
+
+            reg = get_registry()
+            items = [meta for _name, meta in reg.list_skills()]
+            return {"ok": True, "items": items, "error": None}
+
         if src == "runtime":  # agents, from the live registry
             from ..admin import _registry, _summary
             reg = _registry(request)

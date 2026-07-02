@@ -30,13 +30,16 @@ from .agent_server_client import AgentServerClient
 from .composer.executor import ExecContext, GraphExecutor
 from .composer.ir import IREdge, IRGraph, IRNode
 from .config import Settings
-from .dsl import AgentRecord, Delivery, Guardrails, Rag
+from .dsl import AgentRecord, Brain, Delivery, Guardrails, Judge, Rag
 from .dsl_graph import GraphNode, GraphRecord, from_flat_record
 from .graph_executor import GraphWorkflowExecutor, WalkContext
 from .nodes.brain import run_brain
 from .nodes.delivery import deliver
 from .nodes.guardrail import apply_guardrails
+from .nodes.loop import run_agent_loop
+from .nodes.rag import retrieve_and_inject
 from .mcp_client import MCPClient
+from .skills.registry import SkillRegistry, get_registry
 
 log = logging.getLogger("agent_runtime.runner")
 
@@ -69,6 +72,13 @@ class Runner:
         self._bus = bus
         self._agent_server = agent_server or AgentServerClient(settings.agent_server_url)
         self._sio_factory = sio_factory
+        # The skill registry (§8.3) — loaded once from settings.skills_dir and shared
+        # across runs. Failures to load degrade to None (skills simply don't inject).
+        self._skills: SkillRegistry | None = None
+        try:
+            self._skills = get_registry(settings.skills_dir)
+        except Exception as exc:  # noqa: BLE001 - surface loudly, never block the runner
+            log.error("skill registry failed to load from %s: %s", settings.skills_dir, exc)
 
     async def run(self, record: AgentRecord, env: EventEnvelope) -> None:
         s = self._settings
@@ -95,7 +105,8 @@ class Runner:
 
         async def h_agent(node, value, ctx):
             brain_res = await run_brain(
-                record, value, agent_server=self._agent_server, mcp=mcp, on_tool=on_tool
+                record, value, agent_server=self._agent_server, mcp=mcp,
+                on_tool=on_tool, skills=self._skills,
             )
             if brain_res.thought:
                 await emit("agent.thought", {"thought": brain_res.thought})
@@ -171,7 +182,8 @@ class Runner:
                 )
             task = self._build_agent_task(record, value, overrides)
             brain_res = await run_brain(
-                record, task, agent_server=self._agent_server, mcp=None
+                record, task, agent_server=self._agent_server, mcp=None,
+                skills=self._skills,
             )
             if brain_res.thought:
                 await emit_for(record, "agent.thought", {"thought": brain_res.thought})
@@ -270,34 +282,67 @@ class Runner:
             return initial_task
 
         async def h_rag(node: GraphNode, value, ctx: WalkContext):
-            # RAG-pre (§8.1): retrieve-then-inject BEFORE the agent. Retrieval wiring is
-            # Phase 08; here the node is a real, in-order stage that passes the value
-            # through unchanged (it does NOT swallow it) and records that it ran. Loud if
-            # its config is malformed.
-            Rag.model_validate(node.config.get("rag") or {})
-            await self._emit(cid, "rag.retrieved", {"node": node.id, "domains":
-                             (node.config.get("rag") or {}).get("domains", [])})
-            return value
+            # RAG-pre (§8.1): retrieve-then-inject BEFORE the agent. Retrieve context for
+            # the incoming task and inject it into the value flowing to the downstream
+            # agent. Degrades gracefully — a down retrieval backend passes through (loud
+            # warning), never crashes the run. Loud if the config itself is malformed.
+            rag = Rag.model_validate(node.config.get("rag") or {})
+            injected = await retrieve_and_inject(rag, value, settings=s)
+            grew = len(str(injected)) > len(str(value or ""))
+            await self._emit(
+                cid, "rag.retrieved",
+                {"node": node.id, "domains": rag.domains, "injected": grew},
+            )
+            return injected
 
         async def h_agent(node: GraphNode, value, ctx: WalkContext):
             node_record = self._graph_agent_record(node)
             mcp = self._make_mcp(node_record)
             task = self._build_agent_task(node_record, value, overrides)
-            brain_res = await run_brain(
-                node_record, task, agent_server=self._agent_server, mcp=mcp
-            )
-            if brain_res.thought:
-                await emit_for(node_record, "agent.thought", {"thought": brain_res.thought})
-            if not brain_res.answer.strip():
-                await emit_for(node_record, "workflow.terminated", {"reason": "empty_answer"})
-                raise RuntimeError(
-                    f"agent '{node_record.name}' produced an empty answer (cid={cid})"
+
+            # One whole agent invocation (the unit the OUTER loop repeats). Distinct from
+            # the Brain node's INNER tools.max_rounds loop, which lives inside run_brain.
+            async def run_once(loop_task: str) -> str:
+                brain_res = await run_brain(
+                    node_record, loop_task, agent_server=self._agent_server, mcp=mcp,
+                    skills=self._skills,
                 )
-            ctx.scratch["turns_used"] = (
-                ctx.scratch.get("turns_used", 0) + brain_res.turns_used
+                if brain_res.thought:
+                    await emit_for(node_record, "agent.thought", {"thought": brain_res.thought})
+                if not brain_res.answer.strip():
+                    await emit_for(node_record, "workflow.terminated", {"reason": "empty_answer"})
+                    raise RuntimeError(
+                        f"agent '{node_record.name}' produced an empty answer (cid={cid})"
+                    )
+                ctx.scratch["turns_used"] = (
+                    ctx.scratch.get("turns_used", 0) + brain_res.turns_used
+                )
+                return brain_res.answer
+
+            # One Judge invocation (only used by the 'judge' loop type). A Judge is just an
+            # agent profile (its persona + sampling) run in the judging role over the
+            # outcome; its raw text is read as a verdict by run_agent_loop.
+            async def run_judge(judge: Judge, judge_task: str) -> str:
+                judge_record = self._judge_record(node_record, judge)
+                jres = await run_brain(
+                    judge_record, judge_task, agent_server=self._agent_server, mcp=None,
+                    skills=self._skills,
+                )
+                await emit_for(
+                    node_record, "loop.verdict",
+                    {"judge": judge.persona, "output": jres.answer[:2000]},
+                )
+                return jres.answer
+
+            loop_res = await run_agent_loop(
+                node_record.loop, task, run_once, run_judge=run_judge
             )
-            await emit_for(node_record, "agent.result", {"output": brain_res.answer[:4000]})
-            return brain_res.answer
+            await emit_for(
+                node_record, "loop.done",
+                {"iterations": loop_res.iterations, "stopped_by": loop_res.stopped_by},
+            )
+            await emit_for(node_record, "agent.result", {"output": loop_res.outcome[:4000]})
+            return loop_res.outcome
 
         async def h_guardrail(node: GraphNode, value, ctx: WalkContext):
             guardrails = Guardrails.model_validate(node.config.get("guardrails") or {})
@@ -371,6 +416,20 @@ class Runner:
         if rec is None:
             raise RuntimeError(f"agent node '{node.id}' has no embedded record config")
         return AgentRecord.model_validate(rec)
+
+    @staticmethod
+    def _judge_record(agent_record: AgentRecord, judge: Judge) -> AgentRecord:
+        """A minimal ``AgentRecord`` that runs the embedded Judge as a plain agent
+        (persona + sampling only — no tools/skills/loop of its own). Reuses the host
+        agent's identity/version so run events stay attributable; the Brain node only
+        needs a valid record to POST the Judge's persona to agent_server."""
+        return AgentRecord(
+            version=agent_record.version,
+            uid=agent_record.uid,
+            name=f"{agent_record.name}::judge",
+            brain=Brain(persona=judge.persona, llm=judge.llm),
+            delivery=agent_record.delivery,
+        )
 
     @staticmethod
     def _record_from_node(node: IRNode) -> AgentRecord:

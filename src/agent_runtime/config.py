@@ -76,6 +76,10 @@ class Settings:
 
     # --- Agent registry ---
     agents_dir: str = _str("AGENTS_DIR", "data/agents")
+    # --- Skills registry (block_management.md §8.3) — Agent Runtime's OWN store, distinct
+    # from noted. Scanned for <skills_dir>/<name>/SKILL.md and
+    # <skills_dir>/domains/<id>/skills/<name>/SKILL.md.
+    skills_dir: str = _str("SKILLS_DIR", "data/skills")
     # Static admin UI dir (served at / by the FastAPI app). Relative to the workdir;
     # baked into the image at /app/frontend.
     frontend_dir: str = _str("FRONTEND_DIR", "frontend")
@@ -88,6 +92,12 @@ class Settings:
     # agent_runtime's compose must join that network to resolve this name.
     mcp_server_key: str = _str("MCP_SERVER_KEY", "mcp")
     mcp_url: str = _str("MCP_URL", "http://mcp-service:8080/mcp/")
+    # RAG retrieval backends (block_management.md §8.1) — the dense corpus (noted-rag)
+    # and the knowledge graph (noted-graph), reused via retrieve-then-inject like
+    # cv/backend. Reachable on noted-network. A down backend degrades to pass-through.
+    noted_rag_url: str = _str("NOTED_RAG_URL", "http://noted-rag:8200")
+    noted_graph_url: str = _str("NOTED_GRAPH_URL", "http://noted-graph:5523")
+    rag_top_k: int = _int("RAG_TOP_K", 10)
     whatsapp_bridge_url: str = _str("WHATSAPP_BRIDGE_URL", "http://whatsapp-bridge:3399")
     whatsapp_agent_name: str = _str("WHATSAPP_AGENT_NAME", "news-agent")
     whatsapp_token: str = _str("WHATSAPP_TOKEN", "")  # secret — env only, never the DSL

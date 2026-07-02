@@ -210,10 +210,50 @@ class Agent(Block):
                             placeholder="server__tool, server__tool"),
                 ConfigField("tools_max_rounds", "integer", control="number", min=1, default=3,
                             label="tools max rounds"),
+                # Generic multi-select picker: control "resource-ref" + kind = resource id
+                # ("skill", declared multi=True) → the editor renders a checklist from
+                # /resources/skill, exactly like the Tools picker (§8.3). No bespoke code.
+                ConfigField("skills_allow", "skill", control="resource-ref", label="skills",
+                            placeholder="skill-name, skill-name"),
+                ConfigField("skills_context", "string", control="text", label="skills context",
+                            placeholder="trigger-condition, trigger-condition"),
                 ConfigField("memory", "enum", values=["none", "thread_window"], default="none",
                             control="select", label="memory policy"),
                 ConfigField("memory_max_turns", "integer", control="number", min=1, default=20,
                             label="memory max turns"),
+                # --- Loop (§8.4): the OUTER repeat loop around the whole agent action.
+                # Distinct from tools_max_rounds (the Brain's INNER tool loop). Types are
+                # SEPARATE (not composable): off / counter / expression / judge. Per-type
+                # fields below are only meaningful for their type; lowering emits `loop`
+                # only when the type is not "off".
+                ConfigField("loop_type", "enum",
+                            values=["off", "counter", "expression", "judge"],
+                            default="off", control="select", label="loop type"),
+                ConfigField("loop_n", "integer", control="number", min=1, default=1,
+                            label="loop count (counter)"),
+                ConfigField("loop_expression", "string", control="text",
+                            label="loop expression",
+                            placeholder="stop when this matches the outcome (/regex/ for regex)"),
+                ConfigField("loop_max_iter", "integer", control="number", min=1, default=10,
+                            label="loop max iterations (cap)"),
+                ConfigField("loop_iteration_input", "enum", values=["same", "previous"],
+                            default="same", control="select", label="loop iteration input"),
+                # judge sub-config (only for loop type "judge"): the embedded Judge persona
+                # + how its verdict text is read (expression on output OR a structured field).
+                ConfigField("loop_judge_persona", "preset", control="resource-ref",
+                            label="judge persona (judge)",
+                            placeholder="agent_server preset that judges the outcome"),
+                ConfigField("loop_verdict_read", "enum", values=["expression", "field"],
+                            default="expression", control="select", label="judge verdict read"),
+                ConfigField("loop_verdict_expression", "string", control="text",
+                            label="judge verdict expression",
+                            placeholder="validate when this matches the judge output"),
+                ConfigField("loop_verdict_field", "string", control="text",
+                            label="judge verdict field",
+                            placeholder="dotted JSON path, e.g. result.passed"),
+                ConfigField("loop_judge_template", "string", control="template",
+                            label="judge input template",
+                            placeholder="optional; binds {outcome} and {input}"),
                 # (enabled / persona / description are shown first, above.)
                 # --- optional sampling overrides (beyond temperature/max_tokens) ---
                 ConfigField("top_p", "number", control="number", label="top_p"),
@@ -277,11 +317,48 @@ class Agent(Block):
                 "allow": allow,
                 "max_rounds": int(self.cfg("tools_max_rounds", 3)),
             }
+        # Skills (§8.3): the selected skill names + optional context conditions. Emitted
+        # only when the Agent selected skills — it stays ON the agent (dynamic prompt
+        # assembly), never a wired node.
+        skills_allow = _csv(self.cfg("skills_allow"))
+        if skills_allow:
+            frag["skills"] = {
+                "allow": skills_allow,
+                "context": _csv(self.cfg("skills_context")),
+            }
         if self.cfg("guard_forbidden") or self.cfg("guard_min_confidence") not in (None, ""):
             frag["guardrails"] = {
                 "forbidden": _csv(self.cfg("guard_forbidden")),
                 "min_confidence": float(self.cfg("guard_min_confidence") or 0.5),
             }
+        # Loop (§8.4): the OUTER repeat loop. Emitted only when the type is not "off".
+        # Per-type fields are only folded in for their type (the DSL validates them).
+        loop_type = self.cfg("loop_type", "off") or "off"
+        if loop_type != "off":
+            loop_frag: dict[str, Any] = {
+                "type": loop_type,
+                "max_iter": int(self.cfg("loop_max_iter", 10)),
+                "iteration_input": self.cfg("loop_iteration_input", "same") or "same",
+            }
+            if loop_type == "counter":
+                loop_frag["n"] = int(self.cfg("loop_n", 1))
+            elif loop_type == "expression":
+                loop_frag["expression"] = self.cfg("loop_expression", "") or ""
+            elif loop_type == "judge":
+                verdict_read = self.cfg("loop_verdict_read", "expression") or "expression"
+                verdict: dict[str, Any] = {"read": verdict_read}
+                if verdict_read == "expression":
+                    verdict["expression"] = self.cfg("loop_verdict_expression", "") or ""
+                else:
+                    verdict["field"] = self.cfg("loop_verdict_field", "") or ""
+                judge: dict[str, Any] = {
+                    "persona": self.cfg("loop_judge_persona", "") or "",
+                    "verdict": verdict,
+                }
+                if self.cfg("loop_judge_template") not in (None, ""):
+                    judge["input_template"] = self.cfg("loop_judge_template")
+                loop_frag["judge"] = judge
+            frag["loop"] = loop_frag
         frag["memory"] = {
             "policy": self.cfg("memory", "none") or "none",
             "max_turns": int(self.cfg("memory_max_turns", 20)),

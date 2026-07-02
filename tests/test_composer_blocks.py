@@ -86,6 +86,61 @@ def test_agent_rejects_malformed_input_vars():
     assert any("input_vars" in e for e in a.validate())
 
 
+def test_agent_loop_off_lowers_without_loop_frag():
+    a = Agent(config={"persona": "p"})
+    assert "loop" not in a.lower()
+
+
+def test_agent_loop_counter_lowers_and_validates():
+    from agent_runtime.dsl import AgentRecord
+
+    a = Agent(config={"persona": "p", "loop_type": "counter", "loop_n": 4,
+                      "loop_iteration_input": "previous"})
+    frag = a.lower()
+    assert frag["loop"] == {
+        "type": "counter", "max_iter": 10, "iteration_input": "previous", "n": 4,
+    }
+    rec = AgentRecord.model_validate({
+        "version": "0.1", "uid": "00000000-0000-4000-8000-00000000ca11",
+        "name": "a", "delivery": {"channel": "bus", "target": "x"}, **frag,
+    })
+    assert rec.loop.type == "counter" and rec.loop.n == 4
+
+
+def test_agent_loop_expression_lowers():
+    a = Agent(config={"persona": "p", "loop_type": "expression",
+                      "loop_expression": "DONE", "loop_max_iter": 5})
+    frag = a.lower()
+    assert frag["loop"]["type"] == "expression"
+    assert frag["loop"]["expression"] == "DONE"
+    assert frag["loop"]["max_iter"] == 5
+
+
+def test_agent_loop_judge_lowers_field_and_expression():
+    from agent_runtime.dsl import AgentRecord
+
+    # verdict read = field
+    a = Agent(config={"persona": "p", "loop_type": "judge",
+                      "loop_judge_persona": "critic", "loop_verdict_read": "field",
+                      "loop_verdict_field": "result.passed"})
+    frag = a.lower()
+    assert frag["loop"]["judge"]["persona"] == "critic"
+    assert frag["loop"]["judge"]["verdict"] == {"read": "field", "field": "result.passed"}
+    rec = AgentRecord.model_validate({
+        "version": "0.1", "uid": "00000000-0000-4000-8000-00000000ca11",
+        "name": "a", "delivery": {"channel": "bus", "target": "x"}, **frag,
+    })
+    assert rec.loop.judge.verdict.read == "field"
+
+    # verdict read = expression
+    b = Agent(config={"persona": "p", "loop_type": "judge",
+                      "loop_judge_persona": "critic",
+                      "loop_verdict_read": "expression",
+                      "loop_verdict_expression": "PASS"})
+    bf = b.lower()
+    assert bf["loop"]["judge"]["verdict"] == {"read": "expression", "expression": "PASS"}
+
+
 def test_family_categories():
     assert Agent().category == "Agent"
     assert Trigger().category == "Activity"

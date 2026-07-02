@@ -64,6 +64,15 @@ def build_descriptors() -> list[ResourceDescriptor]:
             columns=["name", "description"],
         ),
         ResourceDescriptor(
+            id="skill", label="Skill", icon="icons/table.svg", identity="name",
+            source="skill", capabilities={LIST, PICK}, multi=True,
+            schema=[
+                {"key": "name", "control": "text", "label": "skill"},
+                {"key": "description", "control": "textarea", "label": "description"},
+            ],
+            columns=["name", "description"],
+        ),
+        ResourceDescriptor(
             id="preset", label="Persona / Preset", icon="icons/robot.svg", identity="name",
             source="agent_server", capabilities={LIST, PICK},
             schema=[
