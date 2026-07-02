@@ -46,7 +46,8 @@ async def lifespan(app: FastAPI):
     # The graph-record registry (deployed Projects, §9.3) — shared with the admin API's
     # /admin/projects/* deploy lifecycle AND with the farm, so a deployed Project is live
     # and firable at once. Created before the farm starts so its routing is wired.
-    graph_registry = GraphRegistry()
+    # Persisted under settings.graphs_dir → deployed Projects survive a restart (§9.3).
+    graph_registry = GraphRegistry(settings.graphs_dir)
 
     farm = Farm(settings, registry, graph_registry=graph_registry)
     await farm.connect()

@@ -76,6 +76,9 @@ class Settings:
 
     # --- Agent registry ---
     agents_dir: str = _str("AGENTS_DIR", "data/agents")
+    # --- Deployed graph records (§9.3) — persisted so a Deploy survives a restart and
+    # the scheduler firing-binding never points at a lost record_uid. One JSON per uid.
+    graphs_dir: str = _str("GRAPHS_DIR", "data/graphs")
     # --- Skills registry (block_management.md §8.3) — Agent Runtime's OWN store, distinct
     # from noted. Scanned for <skills_dir>/<name>/SKILL.md and
     # <skills_dir>/domains/<id>/skills/<name>/SKILL.md.

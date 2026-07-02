@@ -1,0 +1,84 @@
+{
+  "version": "0.1",
+  "uid": "news-agent",
+  "name": "News Agent",
+  "description": null,
+  "enabled": true,
+  "entry": "trigger:1",
+  "nodes": [
+    {
+      "id": "trigger:1",
+      "kind": "initiator",
+      "asset_ref": "ai-morning-news",
+      "config": {
+        "type": "schedule"
+      }
+    },
+    {
+      "id": "agent:2",
+      "kind": "agent",
+      "asset_ref": "news_curator",
+      "config": {
+        "record": {
+          "version": "0.1",
+          "brain": {
+            "persona": "news_curator",
+            "llm": {
+              "temperature": 0.3,
+              "max_tokens": 16384
+            }
+          },
+          "description": "Morning AI headlines (NewsAPI) → L2K Chat",
+          "enabled": true,
+          "tools": {
+            "server": "mcp",
+            "allow": [
+              "mcp__newsapi_search",
+              "mcp__fetch_url"
+            ],
+            "max_rounds": 4
+          },
+          "memory": {
+            "policy": "none",
+            "max_turns": 20
+          },
+          "input": {
+            "template": "Curate the {n} best morning headlines about {topic}.",
+            "vars": {
+              "n": 5,
+              "topic": "AI agents"
+            }
+          },
+          "uid": "00000000-0000-4000-8000-000000000000",
+          "name": "2",
+          "delivery": {
+            "channel": "bus",
+            "target": "unused"
+          }
+        }
+      }
+    },
+    {
+      "id": "whatsapp:3",
+      "kind": "destination",
+      "asset_ref": "120363427427912302@g.us",
+      "config": {
+        "channel": "whatsapp",
+        "target": "120363427427912302@g.us",
+        "target_name": "L2K Chat"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src": "trigger:1",
+      "dst": "agent:2",
+      "port": "out"
+    },
+    {
+      "src": "agent:2",
+      "dst": "whatsapp:3",
+      "port": "out"
+    }
+  ]
+}

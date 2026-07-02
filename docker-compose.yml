@@ -23,6 +23,10 @@ services:
       # container fs is ephemeral. The host dir is the source of truth: the registry
       # loads from it at boot and the admin API writes to it on deploy.
       - ./data/agents:/app/data/agents
+      # Deployed graph records (§9.3) — one JSON per Project uid. Same rationale as
+      # data/agents: the host dir is the source of truth so a Deploy survives a restart
+      # and the scheduler firing-binding never points at a lost record_uid.
+      - ./data/graphs:/app/data/graphs
     networks:
       # logus2k_network: valkey-bus, agent_server, whatsapp-bridge.
       # noted-network: mcp-service (the decoupled tool host).
