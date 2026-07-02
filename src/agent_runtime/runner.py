@@ -30,7 +30,9 @@ from .agent_server_client import AgentServerClient
 from .composer.executor import ExecContext, GraphExecutor
 from .composer.ir import IREdge, IRGraph, IRNode
 from .config import Settings
-from .dsl import AgentRecord, Delivery
+from .dsl import AgentRecord, Delivery, Guardrails, Rag
+from .dsl_graph import GraphNode, GraphRecord, from_flat_record
+from .graph_executor import GraphWorkflowExecutor, WalkContext
 from .nodes.brain import run_brain
 from .nodes.delivery import deliver
 from .nodes.guardrail import apply_guardrails
@@ -236,7 +238,139 @@ class Runner:
             {"reason": "done", "turns": exec_ctx.scratch.get("turns_used", 0)},
         )
 
+    async def run_graph_record(self, record: GraphRecord, env: EventEnvelope) -> None:
+        """Execute a **persisted graph/workflow record** (``GraphRecord``) through the
+        ``GraphWorkflowExecutor`` — the graph form of §9.3 with fan-out / per-message
+        fan-in (§9.3.2).
+
+        The decomposed node kinds (§8.1) each get a handler:
+            initiator   → seed the workflow with the trigger's task
+            rag         → pre-inference retrieve-then-inject (stub inject for now)
+            agent       → brain (FC loop over agent_server + MCP)
+            guardrail   → output-side check; raises loudly on a block
+            destination → delivery (whatsapp | bus | tts)
+
+        A legacy flat record is run by passing ``from_flat_record(flat)`` here — same
+        handlers, so the News Agent runs unchanged via the shim."""
+        s = self._settings
+        cid = env.header.cid
+        overrides = (env.payload.data or {}).get("vars") or {}
+        initial_task = str((env.payload.data or {}).get("task") or "")
+
+        async def emit_for(node_record: AgentRecord | None, event_type: str, data: dict) -> None:
+            lbl = (
+                {"agent_uid": node_record.uid, "agent_name": node_record.name}
+                if node_record is not None else {"agent_uid": record.uid, "agent_name": record.name}
+            )
+            await self._emit(cid, event_type, {**lbl, **data})
+
+        async def h_initiator(node: GraphNode, value, ctx: WalkContext):
+            # The workflow's seed: an optional task carried on the trigger event. The
+            # first agent applies its own input template to this value.
+            return initial_task
+
+        async def h_rag(node: GraphNode, value, ctx: WalkContext):
+            # RAG-pre (§8.1): retrieve-then-inject BEFORE the agent. Retrieval wiring is
+            # Phase 08; here the node is a real, in-order stage that passes the value
+            # through unchanged (it does NOT swallow it) and records that it ran. Loud if
+            # its config is malformed.
+            Rag.model_validate(node.config.get("rag") or {})
+            await self._emit(cid, "rag.retrieved", {"node": node.id, "domains":
+                             (node.config.get("rag") or {}).get("domains", [])})
+            return value
+
+        async def h_agent(node: GraphNode, value, ctx: WalkContext):
+            node_record = self._graph_agent_record(node)
+            mcp = self._make_mcp(node_record)
+            task = self._build_agent_task(node_record, value, overrides)
+            brain_res = await run_brain(
+                node_record, task, agent_server=self._agent_server, mcp=mcp
+            )
+            if brain_res.thought:
+                await emit_for(node_record, "agent.thought", {"thought": brain_res.thought})
+            if not brain_res.answer.strip():
+                await emit_for(node_record, "workflow.terminated", {"reason": "empty_answer"})
+                raise RuntimeError(
+                    f"agent '{node_record.name}' produced an empty answer (cid={cid})"
+                )
+            ctx.scratch["turns_used"] = (
+                ctx.scratch.get("turns_used", 0) + brain_res.turns_used
+            )
+            await emit_for(node_record, "agent.result", {"output": brain_res.answer[:4000]})
+            return brain_res.answer
+
+        async def h_guardrail(node: GraphNode, value, ctx: WalkContext):
+            guardrails = Guardrails.model_validate(node.config.get("guardrails") or {})
+            gr = apply_guardrails(guardrails, str(value))
+            if not gr.ok:
+                log.error("guardrail node '%s' blocked (cid=%s): %s", node.id, cid, gr.reason)
+                await self._emit(
+                    cid, "workflow.terminated",
+                    {"reason": "guardrail_blocked", "detail": gr.reason, "node": node.id},
+                )
+                raise RuntimeError(
+                    f"guardrail node '{node.id}' blocked delivery: {gr.reason}"
+                )
+            return value
+
+        async def h_destination(node: GraphNode, value, ctx: WalkContext):
+            delivery = Delivery(
+                channel=node.config.get("channel") or "bus",
+                target=str(node.config.get("target") or ""),
+                target_name=str(node.config.get("target_name") or ""),
+            )
+            delivery_id = await deliver(
+                delivery, value, settings=s, bus=self._bus,
+                sio_factory=self._sio_factory, cid=cid,
+            )
+            await self._emit(
+                cid, "agent.result",
+                {"agent_uid": record.uid, "agent_name": record.name,
+                 "output": str(value)[:4000], "delivery_id": delivery_id,
+                 "channel": delivery.channel},
+            )
+            return delivery_id
+
+        def on_trace(src: str, dst: str, port: str, ctx: WalkContext) -> None:
+            ctx.scratch.setdefault("edges", []).append((src, dst, port))
+
+        handlers = {
+            "initiator": h_initiator,
+            "rag": h_rag,
+            "agent": h_agent,
+            "guardrail": h_guardrail,
+            "destination": h_destination,
+        }
+        walk_ctx = WalkContext(cid=cid, sender=self._settings.sender_id)
+        await GraphWorkflowExecutor(handlers, on_trace=on_trace).run(record, None, walk_ctx)
+
+        for src, dst, port in walk_ctx.scratch.get("edges", []):
+            await self._emit(cid, "edge.traversed", {"src": src, "dst": dst, "port": port})
+
+        await self._emit(
+            cid, "workflow.terminated",
+            {"reason": "done", "turns": walk_ctx.scratch.get("turns_used", 0),
+             "agent_uid": record.uid, "agent_name": record.name},
+        )
+
+    def run_flat_via_shim(self, record: AgentRecord, env: EventEnvelope):
+        """Compat entry (§9.3): run a legacy flat ``AgentRecord`` by lifting it to a
+        degenerate ``GraphRecord`` (initiator → [rag] → agent → [guardrail] →
+        destination) and executing it through the graph path — so the News Agent runs
+        unchanged through the SAME graph executor as native workflows."""
+        return self.run_graph_record(from_flat_record(record), env)
+
     # --- helpers ------------------------------------------------------------
+
+    @staticmethod
+    def _graph_agent_record(node: GraphNode) -> AgentRecord:
+        """Build the per-node ``AgentRecord`` from a graph agent node's embedded config.
+        tools/skills stay on the agent (they are in this record); rag/guardrails are
+        their own nodes and were stripped from the embed by the shim."""
+        rec = node.config.get("record")
+        if rec is None:
+            raise RuntimeError(f"agent node '{node.id}' has no embedded record config")
+        return AgentRecord.model_validate(rec)
 
     @staticmethod
     def _record_from_node(node: IRNode) -> AgentRecord:
