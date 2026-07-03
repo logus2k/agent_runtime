@@ -63,10 +63,13 @@ async def _formulate_query(
 
 
 async def _search_corpus(
-    client: httpx.AsyncClient, noted_rag_url: str, query: str, domain: str, top_k: int
+    client: httpx.AsyncClient, noted_rag_url: str, query: str, domain: str, top_k: int,
+    rerank_min_score: float = 0.0,
 ) -> list[dict]:
     """Dense-corpus retrieval from noted-rag for one domain's ``<domain>__corpus``
-    collection (the convention cv/backend uses). Fails soft to []."""
+    collection (the convention cv/backend uses). ``rerank_min_score`` MUST be sent —
+    without it noted-rag's reranker applies its own default threshold and can drop every
+    chunk (0 results on a populated corpus). Fails soft to []."""
     try:
         r = await client.post(
             f"{noted_rag_url.rstrip('/')}/search",
@@ -74,6 +77,7 @@ async def _search_corpus(
                 "query": query,
                 "collection": f"{domain}__corpus",
                 "top_k": top_k,
+                "rerank_min_score": rerank_min_score,
             },
             timeout=30,
         )
@@ -168,7 +172,8 @@ async def retrieve_and_inject(
         merged_graph: dict = {"entities": [], "edges": []}
         for domain in rag.domains:
             chunks = await _search_corpus(
-                client, settings.noted_rag_url, query, domain, settings.rag_top_k
+                client, settings.noted_rag_url, query, domain, settings.rag_top_k,
+                settings.rag_rerank_min_score,
             )
             all_chunks.extend(chunks)
             if rag.use_graph:

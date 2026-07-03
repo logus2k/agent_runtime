@@ -101,6 +101,10 @@ class Settings:
     noted_rag_url: str = _str("NOTED_RAG_URL", "http://noted-rag:8200")
     noted_graph_url: str = _str("NOTED_GRAPH_URL", "http://noted-graph:5523")
     rag_top_k: int = _int("RAG_TOP_K", 10)
+    # noted-rag reranks and filters by min score; it must be passed or the reranker's
+    # default threshold drops EVERY chunk (0 results even on a populated corpus). Matches
+    # cv/backend's CV_RERANK_MIN_SCORE convention (0.0 = keep all reranked hits).
+    rag_rerank_min_score: float = float(_str("RAG_RERANK_MIN_SCORE", "0.0"))
     whatsapp_bridge_url: str = _str("WHATSAPP_BRIDGE_URL", "http://whatsapp-bridge:3399")
     whatsapp_agent_name: str = _str("WHATSAPP_AGENT_NAME", "news-agent")
     whatsapp_token: str = _str("WHATSAPP_TOKEN", "")  # secret — env only, never the DSL
