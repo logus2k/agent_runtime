@@ -27,6 +27,10 @@ services:
       # data/agents: the host dir is the source of truth so a Deploy survives a restart
       # and the scheduler firing-binding never points at a lost record_uid.
       - ./data/graphs:/app/data/graphs
+      # Shared file-workflow workspace: the SAME host dir folder_watch watches, so a File
+      # Initiator reads /watched/in and a File Destination writes /watched/out — one folder
+      # on the host (folder_watch/watched/{in,out}) visible to both services.
+      - ../folder_watch/watched:/watched
     networks:
       # logus2k_network: valkey-bus, agent_server, whatsapp-bridge.
       # noted-network: mcp-service (the decoupled tool host).

@@ -500,7 +500,7 @@ class FileInitiator(Initiator):
     def _binding_fields(self) -> list[ConfigField]:
         return [
             ConfigField("watch_path", "string", required=True, control="text",
-                        label="watch path", placeholder="/data/inbox"),
+                        label="watch path", default="/watched/in", placeholder="/watched/in"),
             ConfigField("match", "string", control="text", label="match patterns",
                         placeholder="*.pdf, *.txt"),
         ]
@@ -845,7 +845,8 @@ class FileDestination(Destination):
             ports=[Port("in", "in", STRING)],
             config=[
                 ConfigField("target", "string", required=True, control="text",
-                            label="file path", placeholder="/data/out/result.txt"),
+                            label="file path", default="/watched/out/result.txt",
+                            placeholder="/watched/out/result.txt"),
                 ConfigField("mode", "enum", values=["overwrite", "append"],
                             default="overwrite", control="select", label="write mode"),
             ],
