@@ -25,6 +25,8 @@ secret check here (e.g. an ADMIN_TOKEN bearer).
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import re
 import uuid
@@ -34,11 +36,13 @@ from typing import Any, Optional
 import httpx
 import yaml
 from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from agent_bus_client import fired_event
 
 from .config import settings
+from .events import hub
 from .deploy import IngressClient, SchedulerClient, deploy_project, undeploy_project
 from .dsl import AgentRecord
 from .graph_registry import GraphRegistry
@@ -646,6 +650,38 @@ async def fire_project(uid: str, body: _FireBody, request: Request) -> dict:
     entry_id = await bus.publish(settings.farm_stream_key(), env)
     log.info("manual fire (console) uid=%s cid=%s entry=%s task=%r", uid, cid, entry_id, body.task[:120])
     return {"ok": True, "uid": uid, "cid": cid, "entry": entry_id}
+
+
+@router.get("/projects/{uid}/events")
+async def project_events(uid: str, request: Request) -> StreamingResponse:
+    """Console Receive: a live SSE stream of this Project's ``console.output`` events (the
+    content that reaches its Console (Receive) block). Push-based (no polling) — subscribes an
+    in-process hub queue per connection, filters to this ``record_uid``, and emits one SSE
+    ``data:`` frame per output. A keepalive comment every 15s holds the connection open."""
+    q = hub.subscribe()
+
+    async def gen():
+        try:
+            yield ": connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                data = ev.get("data") or {}
+                if ev.get("event_type") == "console.output" and data.get("record_uid") == uid:
+                    yield f"data: {json.dumps(data)}\n\n"
+        finally:
+            hub.unsubscribe(q)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.delete("/projects/{uid}")

@@ -393,9 +393,18 @@ class Activity(Block):
 
 
 class Trigger(Activity):
-    """Boundary source: fires the agent. ``out`` only. Carries the agent id + the
-    schedule (cron/timezone) — the *when* lives beside the record as a scheduler job,
-    not inside it."""
+    """Boundary source: fires the agent on a **schedule**. ``out`` only. Carries the agent
+    id + the schedule — the *when* lives beside the record as a scheduler job, not inside it.
+
+    The schedule has a ``schedule_mode`` selecting which of the scheduler's three trigger
+    kinds to use (all natively supported by agent_scheduler):
+
+      * ``cron``     — a recurring cron expression (+ optional IANA timezone);
+      * ``interval`` — every ``interval_value`` × ``interval_unit`` (seconds…weeks);
+      * ``date``     — a single one-off run at ``run_date`` (ISO 8601).
+
+    (The old ``channel`` trigger type was removed — it established no firing binding and
+    never fired. Reactive/inbound flows use a Web/File/STT initiator instead.)"""
 
     kind = "trigger"
     label = "Trigger"
@@ -408,14 +417,24 @@ class Trigger(Activity):
             ports=[Port("out", "out", ANY)],
             config=[
                 ConfigField("agent_id", "string", required=True, control="text", label="agent id"),
-                ConfigField("trigger_type", "enum", values=["schedule", "channel"],
-                            default="schedule", control="select", label="trigger type"),
+                ConfigField("schedule_mode", "enum", values=["cron", "interval", "date"],
+                            default="cron", control="select", label="schedule mode"),
+                # --- cron mode ---
                 ConfigField("cron", "string", default="0 7 * * *", control="text",
-                            placeholder="min hour dom month weekday"),
+                            label="cron expression", placeholder="min hour dom month weekday"),
                 ConfigField("timezone", "string", control="text", placeholder="e.g. Europe/Lisbon"),
-                # Optional SEED for a schedule fire (firing-contract data.task): a fixed
-                # query/message the cron-driven workflow starts from — feeds RAG-pre and the
-                # Agent's {input}. Blank = no seed (the Agent uses its own input_template).
+                # --- interval mode ---
+                ConfigField("interval_value", "number", default=30, control="number",
+                            label="every (interval)"),
+                ConfigField("interval_unit", "enum",
+                            values=["seconds", "minutes", "hours", "days", "weeks"],
+                            default="minutes", control="select", label="interval unit"),
+                # --- date (one-off) mode ---
+                ConfigField("run_date", "string", control="text", label="run at (one-off)",
+                            placeholder="2026-08-01T09:00"),
+                # Optional SEED for a fire (firing-contract data.task): a fixed query/message
+                # the scheduled workflow starts from — feeds RAG-pre and the Agent's {input}.
+                # Blank = no seed (the Agent uses its own input_template).
                 ConfigField("task", "string", control="text", label="task / query (seed)",
                             placeholder="e.g. latest AI-safety papers"),
             ],
@@ -424,18 +443,29 @@ class Trigger(Activity):
     def lower(self) -> dict[str, Any]:
         return {
             "id": self.cfg("agent_id", "untitled-agent"),
-            "trigger": {"type": self.cfg("trigger_type", "schedule") or "schedule"},
+            "trigger": {"type": "schedule"},
         }
 
-    def schedule_spec(self) -> Optional[dict[str, Any]]:
-        """The scheduler-job side (cron + timezone), or None for a non-schedule
-        trigger. cron defaults to '0 7 * * *'; an empty timezone means UTC."""
-        if (self.cfg("trigger_type", "schedule") or "schedule") != "schedule":
-            return None
-        return {
-            "cron": str(self.cfg("cron") or "0 7 * * *").strip(),
-            "timezone": str(self.cfg("timezone") or "").strip(),
-        }
+    def schedule_spec(self) -> dict[str, Any]:
+        """The scheduler-job side: ``{trigger_type, trigger_args}`` built from
+        ``schedule_mode`` (agent_scheduler's native contract). cron defaults to
+        '0 7 * * *'; an empty timezone means UTC."""
+        mode = str(self.cfg("schedule_mode", "cron") or "cron").strip()
+        if mode == "interval":
+            unit = str(self.cfg("interval_unit", "minutes") or "minutes").strip()
+            try:
+                value = int(self.cfg("interval_value", 0) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            return {"trigger_type": "interval", "trigger_args": {unit: value}}
+        if mode == "date":
+            return {"trigger_type": "date",
+                    "trigger_args": {"run_date": str(self.cfg("run_date") or "").strip()}}
+        args: dict[str, Any] = {"cron_expression": str(self.cfg("cron") or "0 7 * * *").strip()}
+        tz = str(self.cfg("timezone") or "").strip()
+        if tz:
+            args["timezone"] = tz
+        return {"trigger_type": "cron", "trigger_args": args}
 
 
 # --------------------------------------------------------------------------- #
@@ -896,3 +926,29 @@ class WebDestination(Destination):
         delivery = super().lower()["delivery"]
         delivery["method"] = self.cfg("method", "POST") or "POST"
         return {"delivery": delivery}
+
+
+class ConsoleReceive(Destination):
+    """A DISPLAY sink for testing/debugging: shows the content that reaches it live in
+    Patron's Console panel (pushed via SSE per node). No external target — the 'delivery'
+    is to the browser. Pass-through, so it can also sit mid-flow (persist/observe + continue)."""
+
+    kind = "console_receive"
+    label = "Console (Receive)"
+    channel = "console"
+
+    def get_schema(self) -> BlockSchema:
+        return BlockSchema(
+            kind=self.kind,
+            category=self.category,
+            label=self.label,
+            ports=[Port("in", "in", STRING), Port("out", "out", STRING)],
+            config=[
+                ConfigField("label", "string", control="text", label="label",
+                            placeholder="optional label for this console"),
+            ],
+        )
+
+    def lower(self) -> dict[str, Any]:
+        # No external target; the label is carried as target for provenance.
+        return {"delivery": {"channel": "console", "target": self.cfg("label", "") or ""}}

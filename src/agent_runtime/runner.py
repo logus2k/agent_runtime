@@ -24,6 +24,8 @@ from __future__ import annotations
 import logging
 
 from agent_bus_client import EventEnvelope, new_event, seed_of
+
+from .events import hub
 from agent_bus_client.bus import BusClient
 
 from .agent_server_client import AgentServerClient
@@ -398,7 +400,14 @@ class Runner:
             # the strict Delivery Literals — dispatch them to their own deliverers (with
             # the injectable IO seams). The runtime channels (whatsapp/bus/tts) go through
             # the strict Delivery path unchanged.
-            if channel == "file":
+            if channel == "console":
+                # Console Receive: no external delivery — surface the content to the live SSE
+                # (Patron's Console panel), tagged with record_uid + node so the browser routes
+                # it to the right Console block. Pass-through (returns value), so it can tee.
+                delivery_id = "console"
+                await self._emit(cid, "console.output",
+                                 {"record_uid": record.uid, "node": node.id, "output": str(value)})
+            elif channel == "file":
                 delivery_id = await deliver_file(
                     target, str(value),
                     mode=str(node.config.get("mode") or "overwrite"),
@@ -543,6 +552,9 @@ class Runner:
         """Emit one run event. Logged-but-not-fatal on failure (a dropped trace is not
         a dropped message)."""
         try:
+            # Push to the in-process hub FIRST so live SSE subscribers (Console Receive) get
+            # every event even if the bus write below fails.
+            hub.publish({"cid": cid, "event_type": event_type, "data": data})
             sid = await self._bus.incr(f"sid:{cid}")
             await self._bus.expire(f"sid:{cid}", self._settings.sid_ttl_s)
             env = new_event(

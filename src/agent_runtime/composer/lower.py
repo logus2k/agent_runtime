@@ -325,6 +325,7 @@ _KIND_MAP: dict[str, str] = {
     "file_initiator": "initiator",
     "web_initiator": "initiator",
     "stt_initiator": "initiator",
+    "console_send": "initiator",
     "agent": "agent",
     "rag": "rag",
     "guardrail": "guardrail",
@@ -337,6 +338,7 @@ _KIND_MAP: dict[str, str] = {
     # New SINKS (§8) — File writes a file; Web calls an outbound API.
     "file_destination": "destination",
     "web_destination": "destination",
+    "console_receive": "destination",
 }
 
 # Composition block kinds that are recognized but produce NO runtime GraphRecord node —
@@ -347,8 +349,8 @@ _INERT_KINDS = {"transform"}
 # Kinds that are valid firing entry points (initiators, §9.3.1). Several INDEPENDENT
 # initiator block types (no "family" abstraction) — schedule Trigger + the new boundary
 # sources, each fired by its own external emitter service.
-_INITIATOR_KINDS = {"trigger", "file_initiator", "web_initiator", "stt_initiator"}
-_DEST_KINDS = {"whatsapp", "tts", "bus", "file_destination", "web_destination"}
+_INITIATOR_KINDS = {"trigger", "file_initiator", "web_initiator", "stt_initiator", "console_send"}
+_DEST_KINDS = {"whatsapp", "tts", "bus", "file_destination", "web_destination", "console_receive"}
 
 
 def _decompose_agent_capabilities(nodes, edges):
@@ -594,7 +596,7 @@ class ProjectLowering:
             # unbound: a block with no asset binding where one is expected.
             if kind in ("agent",) and not self._asset_ref(n):
                 w.append(f"unbound block {label}: no persona/asset selected")
-            if kind in _DEST_KINDS and not self._asset_ref(n):
+            if kind in _DEST_KINDS and kind != "console_receive" and not self._asset_ref(n):
                 w.append(f"unbound block {label}: no destination target selected")
             # a non-initiator, non-destination block wired to nothing on either side.
             if (

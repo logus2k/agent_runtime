@@ -74,20 +74,23 @@ class SchedulerClient:
         )
 
     async def upsert_schedule(
-        self, schedule_id: str, *, cron: str, timezone: str = ""
+        self, schedule_id: str, *, trigger_type: str = "cron",
+        trigger_args: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        """Create the schedule, or PATCH it if it already exists (idempotent re-deploy)."""
-        args: dict[str, Any] = {"cron_expression": cron}
-        if timezone:
-            args["timezone"] = timezone
-        body = {"schedule_id": schedule_id, "trigger_type": "cron", "trigger_args": args}
+        """Create the schedule, or PATCH it if it already exists (idempotent re-deploy).
+
+        ``trigger_type`` is one of the scheduler's native kinds (``cron`` / ``interval`` /
+        ``date``); ``trigger_args`` is the matching arg set (cron_expression+timezone,
+        interval parts, or run_date). Passed through verbatim to agent_scheduler."""
+        args: dict[str, Any] = dict(trigger_args or {})
+        body = {"schedule_id": schedule_id, "trigger_type": trigger_type, "trigger_args": args}
         async with await self._client() as client:
             resp = await client.post("/schedules", json=body)
             if resp.status_code == 409:
-                # Already exists → update its cron/timezone in place.
+                # Already exists → update its trigger in place (PATCH needs both together).
                 resp = await client.patch(
                     f"/schedules/{schedule_id}",
-                    json={"trigger_type": "cron", "trigger_args": args},
+                    json={"trigger_type": trigger_type, "trigger_args": args},
                 )
             resp.raise_for_status()
             return resp.json()
@@ -297,16 +300,38 @@ def _find_initiator(composition: dict[str, Any]) -> tuple[Optional[str], Optiona
 
 
 def _find_schedule_initiator(composition: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """The FIRST schedule-type Trigger node in the composition, or None. Its firing
-    becomes the Project's firing (§9.3.1). Non-schedule triggers (channel type) fire on
-    the channel event, not a schedule, so they establish no scheduler binding here."""
+    """The FIRST Trigger node in the composition, or None. Its firing becomes the
+    Project's firing (§9.3.1). Every Trigger is a schedule now (cron/interval/date);
+    a legacy ``channel`` trigger — a type we removed — is skipped (it never fired)."""
     for n in (composition or {}).get("nodes") or []:
         if n.get("type") != "trigger":
             continue
         props = n.get("properties") or {}
-        if (props.get("trigger_type") or "schedule") == "schedule":
-            return n
+        if str(props.get("trigger_type") or "") == "channel":
+            continue  # legacy channel node: no firing binding (matches old behaviour)
+        return n
     return None
+
+
+def _build_trigger(props: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Map a Trigger node's ``schedule_mode`` + fields to the scheduler's
+    ``(trigger_type, trigger_args)``. Mirrors ``blocks.Trigger.schedule_spec`` but reads
+    the raw node properties (deploy works off the serialized composition, not the block)."""
+    mode = str(props.get("schedule_mode") or "cron").strip()
+    if mode == "interval":
+        unit = str(props.get("interval_unit") or "minutes").strip()
+        try:
+            value = int(props.get("interval_value") or 0)
+        except (TypeError, ValueError):
+            value = 0
+        return "interval", {unit: value}
+    if mode == "date":
+        return "date", {"run_date": str(props.get("run_date") or "").strip()}
+    args: dict[str, Any] = {"cron_expression": str(props.get("cron") or "0 7 * * *").strip()}
+    tz = str(props.get("timezone") or "").strip()
+    if tz:
+        args["timezone"] = tz
+    return "cron", args
 
 
 async def deploy_project(
@@ -357,8 +382,7 @@ async def deploy_project(
         firing["reason"] = "no schedule/File/Web/STT initiator; nothing to bind"
     else:
         props = initiator.get("properties") or {}
-        cron = str(props.get("cron") or "0 7 * * *").strip()
-        timezone = str(props.get("timezone") or "").strip()
+        trigger_type, trigger_args = _build_trigger(props)
         task = str(props.get("task") or "").strip()
         sched_id = schedule_id_for(uid)
         bind_id = binding_id_for(uid)
@@ -366,12 +390,14 @@ async def deploy_project(
         # The binding's event_data identifies THIS graph record so the farm routes a fired
         # event to it (record_uid). agent_name aids logs/back-compat. ``task`` is the
         # schedule's SEED per the firing contract (data.task) — a fixed query/message a
-        # cron-driven agent starts from (feeds RAG-pre + the Agent's {input}); "" if none.
+        # scheduled agent starts from (feeds RAG-pre + the Agent's {input}); "" if none.
         event_data = {"record_uid": uid, "agent_name": name}
         if task:
             event_data["task"] = task
         try:
-            await scheduler.upsert_schedule(sched_id, cron=cron, timezone=timezone)
+            await scheduler.upsert_schedule(
+                sched_id, trigger_type=trigger_type, trigger_args=trigger_args,
+            )
             await scheduler.upsert_binding(
                 sched_id,
                 bind_id,
@@ -383,14 +409,14 @@ async def deploy_project(
                 "bound": True,
                 "schedule_id": sched_id,
                 "binding_id": bind_id,
-                "cron": cron,
-                "timezone": timezone or None,
+                "trigger_type": trigger_type,
+                "trigger_args": trigger_args,
                 "target_stream_id": stream,
                 "reason": None,
             }
             log.info(
-                "deploy %s '%s': firing binding %s -> record_uid=%s (schedule %s, cron %r)",
-                uid, name, bind_id, uid, sched_id, cron,
+                "deploy %s '%s': firing binding %s -> record_uid=%s (schedule %s, %s %r)",
+                uid, name, bind_id, uid, sched_id, trigger_type, trigger_args,
             )
         except httpx.HTTPError as exc:
             msg = f"scheduler firing binding failed: {exc}"

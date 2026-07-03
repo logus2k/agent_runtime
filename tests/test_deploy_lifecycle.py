@@ -40,11 +40,15 @@ class FakeScheduler:
         self.delete_binding_calls: list[tuple[str, str]] = []
         self.delete_schedule_calls: list[str] = []
 
-    async def upsert_schedule(self, schedule_id: str, *, cron: str, timezone: str = "") -> dict:
+    async def upsert_schedule(
+        self, schedule_id: str, *, trigger_type: str = "cron",
+        trigger_args: dict[str, Any] | None = None,
+    ) -> dict:
+        trigger_args = dict(trigger_args or {})
         self.upsert_schedule_calls.append(
-            {"schedule_id": schedule_id, "cron": cron, "timezone": timezone}
+            {"schedule_id": schedule_id, "trigger_type": trigger_type, "trigger_args": trigger_args}
         )
-        self.schedules[schedule_id] = {"cron": cron, "timezone": timezone}
+        self.schedules[schedule_id] = {"trigger_type": trigger_type, "trigger_args": trigger_args}
         return {"schedule_id": schedule_id}
 
     async def upsert_binding(
@@ -80,17 +84,22 @@ class FakeScheduler:
 
 # --- composition builders (litegraph serialize() shape) -----------------------
 def _trigger_agent_whatsapp(*, cron="0 7 * * *", timezone="Europe/Lisbon",
-                            persona="news_curator", target="120363427427912302@g.us") -> dict:
-    """A minimal Trigger -> Agent -> WhatsApp composition, wired with two real links."""
+                            persona="news_curator", target="120363427427912302@g.us",
+                            trigger_props=None) -> dict:
+    """A minimal Trigger -> Agent -> WhatsApp composition, wired with two real links.
+
+    ``trigger_props`` overrides the Trigger node's properties (for interval/date modes);
+    when None, a default cron schedule is used."""
+    tprops = trigger_props if trigger_props is not None else {
+        "agent_id": "ai-morning-news", "schedule_mode": "cron",
+        "cron": cron, "timezone": timezone,
+    }
     return {
         "version": 0.4,
         "nodes": [
             {
                 "id": 1, "type": "trigger",
-                "properties": {
-                    "agent_id": "ai-morning-news", "trigger_type": "schedule",
-                    "cron": cron, "timezone": timezone,
-                },
+                "properties": tprops,
                 "outputs": [{"name": "out", "links": [1]}],
             },
             {
@@ -272,11 +281,49 @@ def test_deploy_creates_one_graph_record_and_firing_binding():
     # to THIS record (record_uid), targeting the farm stream.
     assert body["firing"]["bound"] is True
     assert len(sched.upsert_schedule_calls) == 1
-    assert sched.upsert_schedule_calls[0]["cron"] == "0 7 * * *"
+    assert sched.upsert_schedule_calls[0]["trigger_type"] == "cron"
+    assert sched.upsert_schedule_calls[0]["trigger_args"]["cron_expression"] == "0 7 * * *"
     assert len(sched.upsert_binding_calls) == 1
     bind = sched.upsert_binding_calls[0]
     assert bind["event_data"]["record_uid"] == PUID
     assert bind["target_stream_id"]  # the farm ingress stream
+
+
+def test_deploy_interval_schedule_passes_interval_trigger_args():
+    client, reg, sched, ingress = _client()
+    comp = _trigger_agent_whatsapp(trigger_props={
+        "agent_id": "ai-morning-news", "schedule_mode": "interval",
+        "interval_value": 15, "interval_unit": "minutes",
+    })
+    r = client.post(
+        f"/admin/projects/{PUID}/deploy",
+        json={"name": "Interval Project", "composition": comp},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["firing"]["bound"] is True
+    assert body["firing"]["trigger_type"] == "interval"
+    assert body["firing"]["trigger_args"] == {"minutes": 15}
+    call = sched.upsert_schedule_calls[0]
+    assert call["trigger_type"] == "interval"
+    assert call["trigger_args"] == {"minutes": 15}
+
+
+def test_deploy_date_schedule_passes_run_date():
+    client, reg, sched, ingress = _client()
+    comp = _trigger_agent_whatsapp(trigger_props={
+        "agent_id": "ai-morning-news", "schedule_mode": "date",
+        "run_date": "2026-08-01T09:00",
+    })
+    r = client.post(
+        f"/admin/projects/{PUID}/deploy",
+        json={"name": "One-off Project", "composition": comp},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["firing"]["bound"] is True
+    assert body["firing"]["trigger_type"] == "date"
+    assert body["firing"]["trigger_args"] == {"run_date": "2026-08-01T09:00"}
 
 
 def test_redeploy_after_edit_updates_same_uid_and_bumps_version():
@@ -578,13 +625,19 @@ async def test_scheduler_client_upsert_is_idempotent_over_http():
     bid = binding_id_for(PUID)
 
     # first deploy: both create (201).
-    await client.upsert_schedule(sid, cron="0 7 * * *", timezone="Europe/Lisbon")
+    await client.upsert_schedule(
+        sid, trigger_type="cron",
+        trigger_args={"cron_expression": "0 7 * * *", "timezone": "Europe/Lisbon"},
+    )
     await client.upsert_binding(
         sid, bid, target_stream_id="agent-runtime",
         event_type="schedule.fired", event_data={"record_uid": PUID},
     )
     # re-deploy: POST 409 -> PATCH fallback for BOTH.
-    await client.upsert_schedule(sid, cron="0 8 * * *", timezone="Europe/Lisbon")
+    await client.upsert_schedule(
+        sid, trigger_type="cron",
+        trigger_args={"cron_expression": "0 8 * * *", "timezone": "Europe/Lisbon"},
+    )
     await client.upsert_binding(
         sid, bid, target_stream_id="agent-runtime",
         event_type="schedule.fired", event_data={"record_uid": PUID},

@@ -77,8 +77,30 @@ def test_required_config_validation_is_loud():
 
 
 def test_enum_config_validation():
-    bad = Trigger(config={"agent_id": "a", "trigger_type": "nope"})
-    assert any("trigger_type" in e for e in bad.validate())
+    bad = Trigger(config={"agent_id": "a", "schedule_mode": "nope"})
+    assert any("schedule_mode" in e for e in bad.validate())
+
+
+def test_trigger_lowers_to_schedule_only():
+    # channel was removed: a Trigger is always a schedule trigger.
+    assert Trigger(config={"agent_id": "a"}).lower()["trigger"] == {"type": "schedule"}
+
+
+def test_trigger_schedule_spec_per_mode():
+    # cron (default) — cron_expression + optional timezone.
+    spec = Trigger(config={"agent_id": "a", "cron": "0 8 * * 1", "timezone": "Europe/Lisbon"}).schedule_spec()
+    assert spec == {"trigger_type": "cron",
+                    "trigger_args": {"cron_expression": "0 8 * * 1", "timezone": "Europe/Lisbon"}}
+    # cron with no timezone omits the key (→ UTC at the scheduler).
+    assert Trigger(config={"agent_id": "a"}).schedule_spec()["trigger_args"] == {"cron_expression": "0 7 * * *"}
+    # interval — one {unit: value} arg.
+    spec = Trigger(config={"agent_id": "a", "schedule_mode": "interval",
+                           "interval_value": "10", "interval_unit": "hours"}).schedule_spec()
+    assert spec == {"trigger_type": "interval", "trigger_args": {"hours": 10}}
+    # date — a one-off run_date.
+    spec = Trigger(config={"agent_id": "a", "schedule_mode": "date",
+                           "run_date": "2026-08-01T09:00"}).schedule_spec()
+    assert spec == {"trigger_type": "date", "trigger_args": {"run_date": "2026-08-01T09:00"}}
 
 
 def test_agent_rejects_malformed_input_vars():
