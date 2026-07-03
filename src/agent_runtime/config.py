@@ -108,6 +108,14 @@ class Settings:
     whatsapp_bridge_url: str = _str("WHATSAPP_BRIDGE_URL", "http://whatsapp-bridge:3399")
     whatsapp_agent_name: str = _str("WHATSAPP_AGENT_NAME", "news-agent")
     whatsapp_token: str = _str("WHATSAPP_TOKEN", "")  # secret — env only, never the DSL
+    # TTS destination (Kokoro tts_server, Socket.IO): the destination hands the spoken text
+    # to tts_server for the target audio client (a browser/avatar/relay registered there),
+    # the same hand-off model as WhatsApp delivery. Optional voice; blank = server default.
+    tts_server_url: str = _str("TTS_SERVER_URL", "http://tts_server:7700")
+    # A valid ENABLED Kokoro voice — tts_server drops synthesis if the client's voice
+    # isn't enabled. af_heart (American English) is the shared default (cv/noted use it).
+    tts_voice: str = _str("TTS_VOICE", "af_heart")
+    tts_timeout_s: int = _int("TTS_TIMEOUT_S", 30)
     # Scheduler admin API — read-only, for the admin UI's consistency view (which jobs
     # target which agents), AND the Deploy firing binding (Schedule + Binding upsert,
     # §9.3.1). Reachable on logus2k_network. Joined server-side to dodge CORS.

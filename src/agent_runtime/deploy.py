@@ -359,12 +359,17 @@ async def deploy_project(
         props = initiator.get("properties") or {}
         cron = str(props.get("cron") or "0 7 * * *").strip()
         timezone = str(props.get("timezone") or "").strip()
+        task = str(props.get("task") or "").strip()
         sched_id = schedule_id_for(uid)
         bind_id = binding_id_for(uid)
         stream = farm_stream_id or settings.farm_stream_id
-        # The binding's event_data identifies THIS graph record so the farm routes a
-        # fired event to it (record_uid). agent_name aids logs/back-compat.
+        # The binding's event_data identifies THIS graph record so the farm routes a fired
+        # event to it (record_uid). agent_name aids logs/back-compat. ``task`` is the
+        # schedule's SEED per the firing contract (data.task) — a fixed query/message a
+        # cron-driven agent starts from (feeds RAG-pre + the Agent's {input}); "" if none.
         event_data = {"record_uid": uid, "agent_name": name}
+        if task:
+            event_data["task"] = task
         try:
             await scheduler.upsert_schedule(sched_id, cron=cron, timezone=timezone)
             await scheduler.upsert_binding(

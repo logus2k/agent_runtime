@@ -413,6 +413,11 @@ class Trigger(Activity):
                 ConfigField("cron", "string", default="0 7 * * *", control="text",
                             placeholder="min hour dom month weekday"),
                 ConfigField("timezone", "string", control="text", placeholder="e.g. Europe/Lisbon"),
+                # Optional SEED for a schedule fire (firing-contract data.task): a fixed
+                # query/message the cron-driven workflow starts from — feeds RAG-pre and the
+                # Agent's {input}. Blank = no seed (the Agent uses its own input_template).
+                ConfigField("task", "string", control="text", label="task / query (seed)",
+                            placeholder="e.g. latest AI-safety papers"),
             ],
         )
 

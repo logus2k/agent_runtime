@@ -12,6 +12,7 @@ failed delivery raises loudly — a dropped message must never look like a succe
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable
 
@@ -44,6 +45,8 @@ async def deliver(
         return await _deliver_whatsapp(delivery.target, text, settings, sio_factory)
     if channel == "bus":
         return await _deliver_bus(delivery.target, text, settings, bus, cid)
+    if channel == "tts":
+        return await _deliver_tts(delivery.target, text, settings, sio_factory)
     raise DeliveryError(f"unsupported delivery channel: {channel!r}")
 
 
@@ -155,6 +158,67 @@ async def _deliver_whatsapp(
             await sio.disconnect()
         except Exception as exc:  # noqa: BLE001
             log.warning("error disconnecting from bridge: %s", exc)
+
+
+async def _deliver_tts(
+    target_client_id: str,
+    text: str,
+    settings: Settings,
+    sio_factory: Callable[[], Any] | None,
+) -> str:
+    """Hand ``text`` to the Kokoro tts_server (Socket.IO) for a target audio client. Same
+    hand-off model as WhatsApp: agent_runtime does NOT play audio — it registers as an audio
+    consumer for ``target_client_id`` and sends the text; tts_server synthesizes and streams
+    the audio to whatever consumer(s) (browser / avatar / relay) are registered for that id.
+    We await ``tts_response_complete`` (bounded) so a synth failure surfaces loudly, then
+    disconnect. Returns the target client id."""
+    if not target_client_id or not target_client_id.strip():
+        raise DeliveryError("tts destination: target (audio client id) is empty")
+    if sio_factory is None:
+        import socketio  # local import so the package loads without socketio at rest
+
+        sio_factory = socketio.AsyncClient
+
+    sio = sio_factory()
+    done = asyncio.Event()
+    sio.on("tts_response_complete", lambda *_a: done.set())
+    sio.on("tts_error", lambda *_a: done.set())
+    try:
+        try:
+            await sio.connect(settings.tts_server_url, socketio_path="/socket.io/")
+        except Exception as exc:  # noqa: BLE001 - surfaced as a loud DeliveryError
+            raise DeliveryError(
+                f"could not connect to tts_server {settings.tts_server_url}: {exc}"
+            ) from exc
+
+        # Set up the client session the way tts_server needs before any text (this exact
+        # sequence is what makes it synthesize — a bare register+text yields no audio):
+        #   1) register as an audio consumer for this id (+ a valid voice; an un-voiced
+        #      client is dropped),  2) set mode=tts (the synthesis path requires it),
+        #   3) configure the voice,  then send the whole text with a final flush.
+        reg: dict[str, Any] = {"main_client_id": target_client_id, "connection_type": "server"}
+        if settings.tts_voice:
+            reg["voice"] = settings.tts_voice
+        await sio.emit("register_audio_client", reg)
+        await sio.emit("set_client_mode", {"client_id": target_client_id, "mode": "tts"})
+        if settings.tts_voice:
+            await sio.emit("tts_configure_client",
+                           {"client_id": target_client_id, "voice": settings.tts_voice})
+        await asyncio.sleep(0.3)  # let the session config land before the text is processed
+        await sio.emit("tts_text_chunk",
+                       {"chunk": text, "final": True, "target_client_id": target_client_id})
+        try:
+            await asyncio.wait_for(done.wait(), timeout=settings.tts_timeout_s)
+        except asyncio.TimeoutError:
+            log.warning("tts_server gave no completion within %ss for client %s "
+                        "(audio may still be streaming)", settings.tts_timeout_s, target_client_id)
+        log.info("delivered to tts client %s (%d chars)", target_client_id, len(text))
+        return target_client_id
+    finally:
+        try:
+            await sio.disconnect()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("error disconnecting from tts_server: %s", exc)
 
 
 async def _deliver_bus(

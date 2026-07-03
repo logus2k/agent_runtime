@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 
-from agent_bus_client import EventEnvelope, new_event
+from agent_bus_client import EventEnvelope, new_event, seed_of
 from agent_bus_client.bus import BusClient
 
 from .agent_server_client import AgentServerClient
@@ -163,7 +163,8 @@ class Runner:
         s = self._settings
         cid = env.header.cid
         overrides = (env.payload.data or {}).get("vars") or {}
-        initial_task = str((env.payload.data or {}).get("task") or "")
+        # Read the workflow seed per the *.fired contract (record_uid routes; task seeds).
+        _record_uid, initial_task = seed_of(env)
 
         async def emit_for(record: AgentRecord | None, event_type: str, data: dict) -> None:
             lbl = (
@@ -273,7 +274,8 @@ class Runner:
         s = self._settings
         cid = env.header.cid
         overrides = (env.payload.data or {}).get("vars") or {}
-        initial_task = str((env.payload.data or {}).get("task") or "")
+        # Read the workflow seed per the *.fired contract (record_uid routes; task seeds).
+        _record_uid, initial_task = seed_of(env)
 
         async def emit_for(node_record: AgentRecord | None, event_type: str, data: dict) -> None:
             lbl = (
