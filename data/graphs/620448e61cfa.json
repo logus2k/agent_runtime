@@ -1,0 +1,73 @@
+{
+  "version": "0.1",
+  "uid": "620448e61cfa",
+  "name": "Lab001",
+  "description": null,
+  "enabled": true,
+  "entry": "file_initiator:1",
+  "nodes": [
+    {
+      "id": "file_destination:3",
+      "kind": "destination",
+      "asset_ref": "/watched/out/result.txt",
+      "config": {
+        "channel": "file",
+        "target": "/watched/out/result.txt",
+        "mode": "overwrite"
+      }
+    },
+    {
+      "id": "file_initiator:1",
+      "kind": "initiator",
+      "asset_ref": null,
+      "config": {
+        "type": "channel"
+      }
+    },
+    {
+      "id": "agent:2",
+      "kind": "agent",
+      "asset_ref": "diana",
+      "config": {
+        "record": {
+          "version": "0.1",
+          "brain": {
+            "persona": "diana",
+            "llm": {
+              "temperature": 0.3,
+              "max_tokens": 1024
+            }
+          },
+          "description": "You are a kind, honest and helpful assistant that provides relevant but brief answers having 1-2 sentences.",
+          "enabled": true,
+          "memory": {
+            "policy": "none",
+            "max_turns": 20
+          },
+          "input": {
+            "template": "",
+            "vars": {}
+          },
+          "uid": "00000000-0000-4000-8000-000000000000",
+          "name": "2",
+          "delivery": {
+            "channel": "bus",
+            "target": "unused"
+          }
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src": "file_initiator:1",
+      "dst": "agent:2",
+      "port": "out"
+    },
+    {
+      "src": "agent:2",
+      "dst": "file_destination:3",
+      "port": "out"
+    }
+  ]
+}
