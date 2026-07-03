@@ -328,6 +328,9 @@ _KIND_MAP: dict[str, str] = {
     "agent": "agent",
     "rag": "rag",
     "guardrail": "guardrail",
+    # Standalone data-source query blocks (emit results into the flow).
+    "vector_query": "vector_query",
+    "graph_query": "graph_query",
     "whatsapp": "destination",
     "tts": "destination",
     "bus": "destination",

@@ -140,6 +140,45 @@ def build_evidence(chunks: list[dict], graph: dict) -> str:
     return "\n".join(parts).strip()
 
 
+async def query_vector(
+    *, query: str, domain: str, top_k: int, settings: Settings,
+    client: "httpx.AsyncClient | None" = None,
+) -> str:
+    """Standalone **Vector Database** query (§ retriever block): dense-corpus retrieval from
+    noted-rag for ``domain``, formatted as an evidence block and RETURNED as the flow value
+    (unlike RAG-pre, which injects into an Agent's task). Empty query/domain → "". Fails soft."""
+    if not query.strip() or not domain.strip():
+        return ""
+    own = client is None
+    client = client or httpx.AsyncClient()
+    try:
+        chunks = await _search_corpus(
+            client, settings.noted_rag_url, query, domain, top_k, settings.rag_rerank_min_score
+        )
+    finally:
+        if own:
+            await client.aclose()
+    return build_evidence(chunks, {"entities": [], "edges": []})
+
+
+async def query_graph(
+    *, query: str, domain: str, settings: Settings,
+    client: "httpx.AsyncClient | None" = None,
+) -> str:
+    """Standalone **Graph Database** query: knowledge-graph retrieval from noted-graph for
+    ``domain``, formatted and RETURNED as the flow value. Empty query/domain → "". Fails soft."""
+    if not query.strip() or not domain.strip():
+        return ""
+    own = client is None
+    client = client or httpx.AsyncClient()
+    try:
+        graph = await _search_graph(client, settings.noted_graph_url, query, domain)
+    finally:
+        if own:
+            await client.aclose()
+    return build_evidence([], graph)
+
+
 async def retrieve_and_inject(
     rag: Rag,
     value: Any,

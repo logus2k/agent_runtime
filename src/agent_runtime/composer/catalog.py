@@ -23,11 +23,13 @@ from .blocks import (
     Composite,
     FileDestination,
     FileInitiator,
+    GraphDatabase,
     Loop,
     SttInitiator,
     TTS,
     Transform,
     Trigger,
+    VectorDatabase,
     WebDestination,
     WebInitiator,
     WhatsApp,
@@ -42,6 +44,9 @@ BLOCK_TYPES: dict[str, type[Block]] = {
     Branch.kind: Branch,
     Loop.kind: Loop,
     Composite.kind: Composite,
+    # Standalone data-source blocks (§ retriever): query a vector/graph DB, emit results.
+    VectorDatabase.kind: VectorDatabase,
+    GraphDatabase.kind: GraphDatabase,
     # New boundary SOURCES (§9.3.1) — out-only initiators, inert in graph execution.
     FileInitiator.kind: FileInitiator,
     WebInitiator.kind: WebInitiator,

@@ -40,7 +40,9 @@ _VERSION_RE = re.compile(r"^(\d+)\.(\d+)$")
 # source blocks (File/Web/STT initiators) all lower to ``initiator`` and the sink blocks
 # (File/Web destinations) all lower to ``destination`` — several block TYPES, one node
 # KIND — so this Literal is unchanged: the specific channel/source lives in node config.
-NodeKind = Literal["initiator", "rag", "guardrail", "agent", "destination"]
+NodeKind = Literal[
+    "initiator", "rag", "vector_query", "graph_query", "guardrail", "agent", "destination"
+]
 
 
 class _Strict(BaseModel):

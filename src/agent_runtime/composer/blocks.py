@@ -576,6 +576,73 @@ class Transform(Activity):
 
 
 # --------------------------------------------------------------------------- #
+# Family: Data sources (Vector/Graph Database) — STANDALONE retrieval blocks that
+# QUERY a DB and emit the results into the flow (NOT agent-coupled — distinct from
+# RAG-pre, which is Agent config that injects into the prompt). Runtime handlers
+# ``h_vector_query`` / ``h_graph_query`` reuse the same retrieval fns as RAG-pre.
+# --------------------------------------------------------------------------- #
+class VectorDatabase(Block):
+    """Query a dense vector corpus (noted-rag ``<domain>__corpus``) and OUTPUT the ranked
+    passages. Uses the incoming value (the workflow seed) as the query, or a fixed ``query``."""
+
+    kind = "vector_query"
+    category = "Block"
+    label = "Vector Database"
+
+    def get_schema(self) -> BlockSchema:
+        return BlockSchema(
+            kind=self.kind,
+            category=self.category,
+            label=self.label,
+            ports=[Port("in", "in", STRING), Port("out", "out", STRING)],
+            config=[
+                ConfigField("domain", "string", required=True, control="text",
+                            label="domain", placeholder="e.g. cv  (collection <domain>__corpus)"),
+                ConfigField("top_k", "integer", control="number", min=1, default=5, label="top k"),
+                ConfigField("query", "string", control="text", label="query (blank = use input)",
+                            placeholder="fixed query, or blank to query with the incoming value"),
+            ],
+        )
+
+    def lower(self) -> dict[str, Any]:
+        cfg: dict[str, Any] = {"domain": self.cfg("domain", "") or ""}
+        if self.cfg("top_k") not in (None, ""):
+            cfg["top_k"] = int(self.cfg("top_k"))
+        if self.cfg("query"):
+            cfg["query"] = self.cfg("query")
+        return cfg
+
+
+class GraphDatabase(Block):
+    """Query a knowledge graph (noted-graph ``/research/<domain>/retrieve``) and OUTPUT the
+    entities/relationships. Query = the incoming value, or a fixed ``query``."""
+
+    kind = "graph_query"
+    category = "Block"
+    label = "Graph Database"
+
+    def get_schema(self) -> BlockSchema:
+        return BlockSchema(
+            kind=self.kind,
+            category=self.category,
+            label=self.label,
+            ports=[Port("in", "in", STRING), Port("out", "out", STRING)],
+            config=[
+                ConfigField("domain", "string", required=True, control="text",
+                            label="domain", placeholder="e.g. cv"),
+                ConfigField("query", "string", control="text", label="query (blank = use input)",
+                            placeholder="fixed query, or blank to query with the incoming value"),
+            ],
+        )
+
+    def lower(self) -> dict[str, Any]:
+        cfg: dict[str, Any] = {"domain": self.cfg("domain", "") or ""}
+        if self.cfg("query"):
+            cfg["query"] = self.cfg("query")
+        return cfg
+
+
+# --------------------------------------------------------------------------- #
 # Family: Control (Branch/Loop) — un-deferred in Phase 3 (the graph form). These
 # have no *flat*-record fragment; they exist in the graph-form IR (ir.py) and are
 # executed by the GraphExecutor via out-port routing. See design §3.2 / §7 Phase 3.

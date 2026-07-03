@@ -37,7 +37,7 @@ from .nodes.brain import run_brain
 from .nodes.delivery import deliver, deliver_file, deliver_web
 from .nodes.guardrail import apply_guardrails
 from .nodes.loop import run_agent_loop
-from .nodes.rag import retrieve_and_inject
+from .nodes.rag import query_graph, query_vector, retrieve_and_inject
 from .mcp_client import MCPClient
 from .skills.registry import SkillRegistry, get_registry
 
@@ -303,6 +303,31 @@ class Runner:
             )
             return injected
 
+        async def h_vector_query(node: GraphNode, value, ctx: WalkContext):
+            # Standalone Vector Database block: query the dense corpus and OUTPUT the results
+            # as the flow value (not agent-coupled). Query = the node's `query` config, else
+            # the incoming value (the workflow seed). Degrades soft; loud on a bad backend.
+            cfg = node.config or {}
+            query = str(cfg.get("query") or "").strip() or str(value or "")
+            domain = str(cfg.get("domain") or "")
+            top_k = int(cfg.get("top_k") or s.rag_top_k)
+            out = await query_vector(query=query, domain=domain, top_k=top_k, settings=s)
+            await self._emit(cid, "db.queried",
+                             {"node": node.id, "backend": "vector", "domain": domain,
+                              "query": query[:200], "hit": bool(out)})
+            return out
+
+        async def h_graph_query(node: GraphNode, value, ctx: WalkContext):
+            # Standalone Graph Database block: query the knowledge graph, OUTPUT results.
+            cfg = node.config or {}
+            query = str(cfg.get("query") or "").strip() or str(value or "")
+            domain = str(cfg.get("domain") or "")
+            out = await query_graph(query=query, domain=domain, settings=s)
+            await self._emit(cid, "db.queried",
+                             {"node": node.id, "backend": "graph", "domain": domain,
+                              "query": query[:200], "hit": bool(out)})
+            return out
+
         async def h_agent(node: GraphNode, value, ctx: WalkContext):
             node_record = self._graph_agent_record(node)
             mcp = self._make_mcp(node_record)
@@ -409,6 +434,8 @@ class Runner:
         handlers = {
             "initiator": h_initiator,
             "rag": h_rag,
+            "vector_query": h_vector_query,
+            "graph_query": h_graph_query,
             "agent": h_agent,
             "guardrail": h_guardrail,
             "destination": h_destination,

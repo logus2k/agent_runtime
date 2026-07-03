@@ -110,6 +110,34 @@ def test_rag_and_guardrail_preserve_fan_in_to_the_agent():
     assert rec.successors(rag.id) == ["agent:2"]
 
 
+def test_vector_and_graph_database_blocks_lower_to_query_nodes():
+    """Standalone Vector/Graph Database blocks lower to `vector_query`/`graph_query` nodes
+    (data sources that emit results into the flow — NOT agent-coupled)."""
+    comp = {
+        "nodes": [
+            _trigger(),
+            {"id": 2, "type": "vector_query", "properties": {"domain": "cv", "top_k": 3},
+             "inputs": [{"name": "in", "link": 1}], "outputs": [{"name": "out", "links": [2]}]},
+            {"id": 3, "type": "graph_query", "properties": {"domain": "cv", "query": "fixed q"},
+             "inputs": [{"name": "in", "link": 2}], "outputs": [{"name": "out", "links": [3]}]},
+            {"id": 4, "type": "bus", "properties": {"target": "out"},
+             "inputs": [{"name": "in", "link": 3}]},
+        ],
+        "links": [[1, 1, 0, 2, 0, "string"], [2, 2, 0, 3, 0, "string"], [3, 3, 0, 4, 0, "string"]],
+    }
+    rec, warnings = lower_project("u-db", "DB", comp)
+    kinds = {n.kind for n in rec.nodes}
+    assert "vector_query" in kinds and "graph_query" in kinds
+    vq = next(n for n in rec.nodes if n.kind == "vector_query")
+    gq = next(n for n in rec.nodes if n.kind == "graph_query")
+    assert vq.config == {"domain": "cv", "top_k": 3}
+    assert gq.config == {"domain": "cv", "query": "fixed q"}
+    assert warnings == []
+    # chained: initiator -> vector -> graph -> destination
+    assert rec.successors("trigger:1") == [vq.id]
+    assert rec.successors(vq.id) == [gq.id]
+
+
 def test_fanout_agent_to_two_destinations_is_graph_form():
     comp = {
         "nodes": [
