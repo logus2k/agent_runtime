@@ -40,6 +40,76 @@ def test_linear_trigger_agent_whatsapp():
     assert warnings == []
 
 
+def test_agent_with_rag_pre_decomposes_into_a_rag_node_before_the_agent():
+    """An Agent carrying RAG-pre config (rag_domains) must lower to a `rag` node wired
+    BEFORE the agent (initiator→rag→agent→dest), so the executor's h_rag runs it. §8.1."""
+    comp = {
+        "nodes": [
+            _trigger(),
+            {"id": 2, "type": "agent", "properties": {"persona": "p", "rag_domains": "cv"},
+             "inputs": [{"name": "in", "link": 1}], "outputs": [{"name": "out", "links": [2]}]},
+            {"id": 3, "type": "bus", "properties": {"target": "b"},
+             "inputs": [{"name": "in", "link": 2}]},
+        ],
+        "links": [[1, 1, 0, 2, 0, "string"], [2, 2, 0, 3, 0, "string"]],
+    }
+    rec, _ = lower_project("u-rag", "Rag", comp)
+    assert "rag" in {n.kind for n in rec.nodes}
+    rag = next(n for n in rec.nodes if n.kind == "rag")
+    assert rag.config["rag"]["domains"] == ["cv"]
+    # wired initiator -> rag -> agent (rag precedes the agent)
+    assert rec.successors("trigger:1") == [rag.id]
+    assert rec.successors(rag.id) == ["agent:2"]
+    # config was MOVED off the agent record (not left to ride along unused)
+    agent = next(n for n in rec.nodes if n.kind == "agent")
+    assert "rag" not in agent.config["record"]
+
+
+def test_agent_with_guardrails_decomposes_into_a_guardrail_node_after_the_agent():
+    comp = {
+        "nodes": [
+            _trigger(),
+            {"id": 2, "type": "agent",
+             "properties": {"persona": "p", "guard_forbidden": "secret,password"},
+             "inputs": [{"name": "in", "link": 1}], "outputs": [{"name": "out", "links": [2]}]},
+            {"id": 3, "type": "bus", "properties": {"target": "b"},
+             "inputs": [{"name": "in", "link": 2}]},
+        ],
+        "links": [[1, 1, 0, 2, 0, "string"], [2, 2, 0, 3, 0, "string"]],
+    }
+    rec, _ = lower_project("u-gd", "Gd", comp)
+    gd = next(n for n in rec.nodes if n.kind == "guardrail")
+    assert gd.config["guardrails"]["forbidden"] == ["secret", "password"]
+    # agent -> guardrail -> destination (guardrail sits AFTER the agent, before the sink)
+    assert rec.successors("agent:2") == [gd.id]
+    assert rec.successors(gd.id) == ["bus:4".replace("4", "3")]  # bus:3
+
+
+def test_rag_and_guardrail_preserve_fan_in_to_the_agent():
+    """Two initiators fan into one Agent with RAG-pre: BOTH incoming edges must reroute to
+    the rag node (fan-in preserved), and the agent runs once per arrival downstream."""
+    comp = {
+        "nodes": [
+            {"id": 1, "type": "trigger",
+             "properties": {"agent_id": "x", "trigger_type": "schedule", "cron": "0 7 * * *"},
+             "outputs": [{"name": "out", "links": [1]}]},
+            {"id": 4, "type": "trigger",
+             "properties": {"agent_id": "y", "trigger_type": "schedule", "cron": "0 8 * * *"},
+             "outputs": [{"name": "out", "links": [3]}]},
+            {"id": 2, "type": "agent", "properties": {"persona": "p", "rag_domains": "cv"},
+             "inputs": [{"name": "in", "link": 1}], "outputs": [{"name": "out", "links": [2]}]},
+            {"id": 3, "type": "bus", "properties": {"target": "b"},
+             "inputs": [{"name": "in", "link": 2}]},
+        ],
+        "links": [[1, 1, 0, 2, 0, "string"], [3, 4, 0, 2, 0, "string"], [2, 2, 0, 3, 0, "string"]],
+    }
+    rec, _ = lower_project("u-fanin", "FanIn", comp)
+    rag = next(n for n in rec.nodes if n.kind == "rag")
+    # both triggers now feed the RAG node (not the agent directly)
+    assert sorted(rec.successors("trigger:1") + rec.successors("trigger:4")) == [rag.id, rag.id]
+    assert rec.successors(rag.id) == ["agent:2"]
+
+
 def test_fanout_agent_to_two_destinations_is_graph_form():
     comp = {
         "nodes": [

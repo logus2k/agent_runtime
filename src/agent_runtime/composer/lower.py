@@ -348,6 +348,60 @@ _INITIATOR_KINDS = {"trigger", "file_initiator", "web_initiator", "stt_initiator
 _DEST_KINDS = {"whatsapp", "tts", "bus", "file_destination", "web_destination"}
 
 
+def _decompose_agent_capabilities(nodes, edges):
+    """Split an Agent carrying RAG-pre and/or Guardrails config into explicit graph nodes so
+    the node-based executor actually runs them:  …→[rag]→agent→[guardrail]→…
+
+    The rag/guardrails config is MOVED off the agent record onto the new nodes (mirrors
+    ``dsl_graph.from_flat_record``). Fan-in/out is preserved: EVERY edge into the agent is
+    rerouted into its rag node, EVERY edge out of the agent leaves from its guardrail node
+    (so an ``A→B`` between two capable agents becomes ``guardrail-A→rag-B``). RAG-pre is
+    emitted only when ``rag.domains`` is non-empty (rewriter/use_graph alone don't retrieve).
+    No-op — returns the inputs unchanged — when no agent has these capabilities."""
+    from ..dsl_graph import GraphEdge, GraphNode
+
+    rag_of: dict[str, str] = {}
+    guard_of: dict[str, str] = {}
+    for n in nodes:
+        if n.kind != "agent":
+            continue
+        rec = (n.config or {}).get("record") or {}
+        if (rec.get("rag") or {}).get("domains"):
+            rag_of[n.id] = f"rag-{n.id}"
+        if rec.get("guardrails"):
+            guard_of[n.id] = f"guardrail-{n.id}"
+    if not rag_of and not guard_of:
+        return nodes, edges
+
+    new_nodes: list = []
+    for n in nodes:
+        if n.kind == "agent" and (n.id in rag_of or n.id in guard_of):
+            rec = dict((n.config or {}).get("record") or {})
+            if n.id in rag_of:
+                new_nodes.append(GraphNode(id=rag_of[n.id], kind="rag",
+                                           config={"rag": rec["rag"]}))
+                rec = {k: v for k, v in rec.items() if k != "rag"}
+            if n.id in guard_of:
+                new_nodes.append(GraphNode(id=guard_of[n.id], kind="guardrail",
+                                           config={"guardrails": rec["guardrails"]}))
+                rec = {k: v for k, v in rec.items() if k != "guardrails"}
+            new_nodes.append(n.model_copy(update={"config": {**(n.config or {}), "record": rec}}))
+        else:
+            new_nodes.append(n)
+
+    new_edges: list = []
+    for e in edges:
+        src = guard_of.get(e.src, e.src)   # agent's OUTgoing now leaves the guardrail node
+        dst = rag_of.get(e.dst, e.dst)     # agent's INcoming now enters the rag node
+        new_edges.append(e.model_copy(update={"src": src, "dst": dst}))
+    for aid, rid in rag_of.items():
+        new_edges.append(GraphEdge(src=rid, dst=aid))       # rag → agent
+    for aid, gid in guard_of.items():
+        new_edges.append(GraphEdge(src=aid, dst=gid))       # agent → guardrail
+
+    return new_nodes, new_edges
+
+
 class ProjectLowering:
     """Lower a Patron Project composition into a ``GraphRecord`` + advisory warnings.
 
@@ -433,6 +487,14 @@ class ProjectLowering:
             if src in known_kind_ids and dst in known_kind_ids:
                 port = self._graph._out_slot_label(self._graph._node(lk[1]), lk[2])
                 edges.append(GraphEdge(src=src, dst=dst, port=port))
+
+        # Decompose agent-embedded capabilities into their graph nodes (§8.1): an Agent
+        # carrying RAG-pre and/or Guardrails config becomes  …→[rag]→agent→[guardrail]→…
+        # so the executor's h_rag / h_guardrail handlers actually run them. Without this the
+        # config rides along on the agent record but is never applied (the graph executor is
+        # node-based; h_agent only runs the brain). Mirrors from_flat_record's decomposition,
+        # generalized to an arbitrary graph (fan-in/out preserved).
+        nodes, edges = _decompose_agent_capabilities(nodes, edges)
 
         # A record needs >=1 node. If the composition has NO lowerable blocks at all, we
         # cannot build a record; this is the ONE hard failure (§9.3) — the caller turns it
