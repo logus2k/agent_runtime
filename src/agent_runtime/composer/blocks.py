@@ -539,6 +539,17 @@ class SttInitiator(Initiator):
         ]
 
 
+class ConsoleSend(Initiator):
+    """A MANUAL initiator for testing/debugging: fires the workflow on demand with a message
+    typed in Patron's Console panel (``POST /admin/projects/<uid>/fire`` — the firing seed).
+    Carries no binding — it is fired by a button, not an external event, so Deploy creates
+    no scheduler/ingress binding for it. The ``message`` is transient UI (sent at click
+    time), not part of the deployed record."""
+
+    kind = "console_send"
+    label = "Console (Send)"
+
+
 class Transform(Activity):
     """A deterministic map ``in: schemaA -> out: schemaB``. Its body can be LLM-
     generated from the two port schemas (§6 codegen). Inert when the schemas already
@@ -842,7 +853,9 @@ class FileDestination(Destination):
             kind=self.kind,
             category=self.category,
             label=self.label,
-            ports=[Port("in", "in", STRING)],
+            # A pass-through OUT so File Destination can persist AND hand its content onward
+            # (the runtime returns the delivered value; the executor broadcasts to successors).
+            ports=[Port("in", "in", STRING), Port("out", "out", STRING)],
             config=[
                 ConfigField("target", "string", required=True, control="text",
                             label="file path", default="/watched/out/result.txt",

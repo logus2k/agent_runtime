@@ -36,6 +36,8 @@ import yaml
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, ValidationError
 
+from agent_bus_client import fired_event
+
 from .config import settings
 from .deploy import IngressClient, SchedulerClient, deploy_project, undeploy_project
 from .dsl import AgentRecord
@@ -613,6 +615,37 @@ async def undeploy(uid: str, request: Request) -> dict:
         ingress=_ingress_client(request),
     )
     return {"ok": True, **result}
+
+
+class _FireBody(BaseModel):
+    task: str = ""
+
+
+@router.post("/projects/{uid}/fire")
+async def fire_project(uid: str, body: _FireBody, request: Request) -> dict:
+    """Manually FIRE a deployed Project — the Console block's Send button. Publishes a
+    ``console.fired`` event ``{record_uid, task}`` to the farm stream; the farm routes it by
+    ``record_uid`` (project isolation) and dispatches it as its own bounded task with a fresh
+    ``cid`` (run isolation), running the deployed graph with ``task`` as the seed. Same firing
+    contract as the file/web/schedule initiators — triggered by a button, not an event."""
+    rec = _graph_registry(request).get(uid)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"no deployed record '{uid}' — deploy it first")
+    if not getattr(rec, "enabled", True):
+        raise HTTPException(status_code=409, detail=f"record '{uid}' is disabled")
+    bus = _bus(request)
+    cid = str(uuid.uuid4())  # a distinct run per Send (do NOT reuse record_uid, or runs collide)
+    env = fired_event(
+        stream_id=settings.farm_stream_id,
+        record_uid=uid,
+        task=body.task,
+        sender="console",
+        source="console",
+        cid=cid,
+    )
+    entry_id = await bus.publish(settings.farm_stream_key(), env)
+    log.info("manual fire (console) uid=%s cid=%s entry=%s task=%r", uid, cid, entry_id, body.task[:120])
+    return {"ok": True, "uid": uid, "cid": cid, "entry": entry_id}
 
 
 @router.delete("/projects/{uid}")

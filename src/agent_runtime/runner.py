@@ -426,7 +426,11 @@ class Runner:
                  "output": str(value)[:4000], "delivery_id": delivery_id,
                  "channel": channel},
             )
-            return delivery_id
+            # A destination normally terminates the flow; but if it has a successor (e.g. a
+            # File Destination wired onward to persist AND hand off its content), pass the
+            # delivered VALUE through — the executor broadcasts it to every successor. The
+            # delivery_id stays in the agent.result trace above.
+            return value
 
         def on_trace(src: str, dst: str, port: str, ctx: WalkContext) -> None:
             ctx.scratch.setdefault("edges", []).append((src, dst, port))

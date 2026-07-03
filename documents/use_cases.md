@@ -1,98 +1,145 @@
-# Use Cases — building agents on agent_runtime
+# Use Cases — composing agents on Agent Runtime
 
-The point of agent_runtime is that **a new agent is mostly a record, not code**. Once the node types it needs exist, you add an agent by writing a runtime DSL record (and creating any new preset/tool/domain it references). This doc shows the first agent end-to-end, then sketches a few more to illustrate how the **node catalog grows demand-driven** — each new agent pulls *at most one* new node into existence, after which the next agent of that shape is free.
+A "use case" is a **Project**: a node graph you author visually in Patron, deploy, and let the farm
+run. Deploy compiles the composition to **one `GraphRecord`** plus **one firing binding**; when the
+bound event fires, the farm routes it by `record_uid` and executes the graph from its entry node,
+delivering the result to the destination(s).
 
-> See [runtime_dsl_specification.md](runtime_dsl_specification.md) for the record schema and [technical_architecture.md](technical_architecture.md) for how it runs.
+```
+Author in Patron → Deploy (compile to a GraphRecord + firing binding) → an event fires it → the farm runs it
+```
+
+> Schema and execution detail: [runtime_dsl_specification.md](runtime_dsl_specification.md) and
+> [technical_architecture.md](technical_architecture.md). This document is the practical map of
+> **what you can actually compose today** — every case below is verified against the live lowering
+> and deploy-binding code.
 
 ---
 
-## 1. News Agent (the first inhabitant) — worked end-to-end
+## The one rule: a Project is ONE workflow
 
-**Goal:** every morning, post a curated short list of headlines about a topic to a WhatsApp chat.
+A Project deploys to a single graph with **one entry** and **one firing source**. Concretely:
 
-Why it's the first example: it's **proactive** (scheduled), which is the capability the bus + scheduler add and which no existing app had. It uses only nodes `trigger`, `brain`, `tools`, `delivery` — no RAG, memory, or guardrails — so it's the leanest real agent.
+- **One connected graph.** Two disconnected groups of blocks in the same Project → only the entry's
+  group runs; the other is silently dead (deploy warns, doesn't refuse).
+- **One firing source.** Multiple initiators → only **one** gets a firing binding (a schedule Trigger
+  wins; otherwise the first File/Web/STT initiator). The rest never fire.
 
-**What you create (three things):**
-
-1. **A preset** in agent_server — `news_curator`:
-   > *Given raw headlines on a topic, return the N best as deduped, ranked one-line headlines with links. No commentary, no preamble.*
-
-2. **A scheduler job** (agent_scheduler) — fire daily, route to the farm:
-   ```jsonc
-   { "job_id": "news-morning-ai", "trigger_type": "cron",
-     "trigger_args": { "cron_expression": "0 7 * * *" },
-     "target_stream_id": "agent-runtime",
-     "event_data": { "agent": "news-morning-ai" } }
-   ```
-
-3. **The agent record** (runtime DSL):
-   ```yaml
-   version: "0.1"
-   id: news-morning-ai
-   trigger:  { type: schedule }
-   brain:    { persona: news_curator, llm: { temperature: 0.3, max_tokens: 1024 } }
-   tools:    { server: noted, allow: [noted__newsapi_search, noted__fetch_url], max_rounds: 3 }
-   input:    { template: "Curate the {n} best morning headlines about {topic}.", vars: { n: 5, topic: "AI agents" } }
-   delivery: { channel: whatsapp, target: "351961050313@c.us" }
-   ```
-
-**What happens at 07:00:**
-
-```
-scheduler cron fires → XADD {agent: news-morning-ai} to stream:agent-runtime
-agent_runtime consumes it → loads the record → runs the brain node:
-   advertise [newsapi_search, fetch_url] to news_curator
-   model calls newsapi_search(topic) → runtime invokes it via the noted MCP server
-   result appended → model curates the short list (≤3 rounds)
-deliver: connect WhatsApp bridge /agent, emit sendMessage(target, list)
-emit run events to the bus (thought/tool/result) → visible in the console
-```
-
-**Efficiency:** one fire/day, one tool call + one curation call, one send — a near-fixed pipeline, bounded and cheap.
+To run two independent workflows, make **two Projects**. Everything below assumes one connected graph
+with a single initiator.
 
 ---
 
-## 2. Sketches — how the next agents reuse or extend the catalog
+## The palette
 
-Each adds **at most one** new node; afterward, agents of that shape are just records.
-
-### a) Scheduled briefing to a dashboard *(reuses everything; new delivery target)*
-Same shape as the News Agent, but `delivery.channel: bus` (post to a stream a dashboard observes) instead of WhatsApp. New agent = a record + a scheduler job. **No new node.**
-
-### b) Grounded Q&A agent *(pulls in the `rag` node)*
-A WhatsApp agent that answers from a knowledge base. Adds `rag` (rewriter preset + domains + graph) before the brain — the cv-style retrieve-then-inject. First such agent builds the `rag` node; every later grounded agent is then a record:
-```yaml
-trigger: { type: channel }
-rag:     { rewriter: cv_query_rewriter, domains: [kb], use_graph: true }
-brain:   { persona: kb_assistant }
-delivery:{ channel: whatsapp, target: "<group-id>" }
-```
-
-### c) Action agent with a guardrail *(pulls in the `guardrail` node)*
-An agent that proposes a command/action; a `guardrail` (Proxy) blocks forbidden patterns / low-confidence outputs before delivery. First such agent builds the `guardrail` node; the safety boundary is then reusable:
-```yaml
-brain:      { persona: ops_assistant }
-tools:      { server: noted, allow: [noted__web_search], max_rounds: 4 }
-guardrails: { forbidden: ["rm -rf", "DROP TABLE"], min_confidence: 0.6 }
-delivery:   { channel: whatsapp, target: "<chat>" }
-```
-
-### d) Escalating agent *(pulls in a `chain`/`router` node, later)*
-Try a fast local persona; if confidence drops, escalate the same context to a stronger model. This is the `chain`/`factory` node — added when an agent actually needs cost/quality routing, mirroring `noted`'s local→cloud cascade.
-
-### e) The escape hatch *(`custom` node)*
-An agent whose logic the catalog doesn't cover drops to a `custom` node referencing a registered handler — keeping you productive on the long tail without contorting the graph. Used sparingly; recurring `custom` logic is the signal to promote it into a real node.
-
----
-
-## 3. The flywheel
-
-| Agent | New node it adds | Cost of the *next* agent of that shape |
+| Family | Blocks | Notes |
 |---|---|---|
-| News Agent | (bootstraps `trigger`/`brain`/`tools`/`delivery`) | a record + job |
-| Dashboard briefing | none | a record + job |
-| Grounded Q&A | `rag` | a record |
-| Action agent | `guardrail` | a record |
-| Escalating agent | `chain`/`router` | a record |
+| **Initiators** (fire the workflow) | Scheduled Trigger · File Initiator · Web Initiator · Speech-to-Text | one per Project |
+| **Processing** | Agent · Vector Database · Graph Database | Agent capabilities (tools, RAG-pre, guardrails, skills, memory, loop) are **config on the Agent**, not separate blocks |
+| **Destinations** (deliver) | WhatsApp · Text-to-Speech · Event Bus · File · Web | fan-out to several is allowed |
 
-After the first few agents, the catalog covers the common patterns and new agents in that space drop to **a record (+ a preset/domain/tool if genuinely new)** — the "build agents fast" goal. The long tail rides the `custom` escape hatch; observability/eval (run traces on the bus, plus future `judge` nodes) keeps "fast to build" from outrunning "able to trust."
+Disabled in the palette (planned, not yet runnable): **Data Transform**, **Workflow (composite)**.
+Not exposed: **Branch**, **Loop-as-a-block**.
+
+**The firing seed.** Each initiator seeds the workflow with the value the graph starts from:
+
+| Initiator | Required config | Seed the Agent receives |
+|---|---|---|
+| Scheduled Trigger | `cron` (+ optional `task`) | the Trigger's `task` message |
+| File Initiator | `watch_path` (default `/watched/in`) | **the file's contents** |
+| Web Initiator | `route` (+ `method`) | the request body |
+| Speech-to-Text | `stream_id` | the transcript |
+
+An empty Agent `input_template` lets the seed flow in verbatim; a template weaves it via `{input}`.
+
+---
+
+## Use cases you can compose today
+
+Each is verified to lower to a valid graph **and** establish a firing binding.
+
+### 1. Scheduled digest → chat  *(the News Agent)*
+`Scheduled Trigger → Agent (persona + MCP tool) → WhatsApp`
+Every morning, curate headlines and post them. The agent advertises a tool (e.g. `newsapi_search`),
+calls it, curates, and delivers. Fires on the scheduler cron.
+
+### 2. Scheduled briefing → dashboard/stream
+`Scheduled Trigger → Agent → Event Bus`
+Same shape, delivered to a bus stream a dashboard observes instead of a chat.
+
+### 3. Document intake
+`File Initiator (/watched/in) → Agent → File Destination (/watched/out/…)`
+Drop a file in the watched folder; the agent receives **its contents**, processes them, and the
+result is written to the output folder. Fires on file create/modify.
+
+### 4. Webhook agent
+`Web Initiator (/route) → Agent → Web Destination`
+A request hits the configured route; the agent acts on the body and the result is POSTed onward (or
+returned via a Bus/File sink). Fires on the HTTP request.
+
+### 5. Voice assistant
+`Speech-to-Text → Agent → Text-to-Speech`
+A transcript seeds the agent; the answer is synthesized back to speech. Fires when the STT front-end
+emits a transcript on the configured `stream_id`.
+
+### 6. Grounded Q&A  *(RAG-pre)*
+`Scheduled/Web Initiator → Agent (rag_domains, rag_use_graph) → destination`
+The Agent's RAG-pre config is **decomposed at deploy** into a `rag` node wired *before* the agent, so
+retrieved passages are injected into the prompt. First-class grounding with no separate block.
+
+### 7. Guardrailed agent
+`… → Agent (guard_forbidden / guard_min_confidence) → destination`
+Guardrail config is **decomposed at deploy** into a `guardrail` node wired *after* the agent, checking
+output before delivery.
+
+### 8. Standalone retrieval  *(no agent)*
+`Scheduled/Web Initiator → Vector Database (or Graph Database) → destination`
+Query a corpus / knowledge graph and deliver the results directly — a pure lookup, no LLM.
+
+### 9. Retrieve-then-reason
+`… → Vector Database → Agent → destination`
+A standalone DB query feeds its results to an agent as input, which then reasons over them.
+
+### 10. Broadcast  *(fan-out)*
+`Agent → WhatsApp  +  Event Bus  +  File`
+One node's output is broadcast to **every** connected destination — deliver the same result to several
+channels at once.
+
+**Agent capabilities (config, not blocks):** an Agent can also carry **tools** (an MCP allow-list),
+**skills**, **memory** (thread window), and an outer **loop** (counter / expression / judge). These
+lower onto the agent record and compose freely with the shapes above.
+
+---
+
+## Not composable yet (and the honest reasons)
+
+| You might want… | Status | Why / what to do instead |
+|---|---|---|
+| **Reactive inbound chat** (a WhatsApp message triggers the agent) | ❌ dead | A Trigger set to `channel` type establishes **no firing binding** — it deploys but never fires. Use a **Web Initiator** or a **schedule** instead. |
+| **Merge several firing sources** into one agent (fan-in) | ⚠️ partial | The graph lowers, but only **one** initiator gets a binding — the others never fire. Split into separate Projects. |
+| **Conditional routing** ("if urgent → WhatsApp else File") | ❌ | The `Branch` block isn't exposed in the palette (and isn't wired into execution). |
+| **Iteration as a block** | ❌ as a block | `Loop`-as-a-block isn't exposed — but the **Agent has a built-in loop** (counter/expression/judge) that covers most needs. |
+| **Reshape data between blocks** | ❌ | `Data Transform` is disabled (planned). |
+| **Nest a saved workflow as a block** | ❌ | `Workflow` (composite) is disabled (planned). |
+| **Escalate to a stronger model / router** | ❌ | No router/chain block. |
+| **Arbitrary custom code** | ❌ | No custom/script node (deliberately). |
+
+---
+
+## At a glance
+
+| Capability | Composable in Patron now? |
+|---|---|
+| Scheduled / File / Web / Speech initiators | ✅ |
+| Agent: persona, MCP tools, RAG-pre, guardrails, skills, memory, loop | ✅ (all Agent config) |
+| Standalone Vector / Graph DB query | ✅ |
+| Destinations: WhatsApp, TTS, Bus, File, Web | ✅ |
+| Fan-out (broadcast to many destinations) | ✅ |
+| Multi-stage chains (retrieve → reason → deliver) | ✅ |
+| Reactive inbound chat (`channel` trigger) | ❌ never fires |
+| Fan-in from multiple initiators | ⚠️ only one fires |
+| Branch / Transform / Composite / Loop-block / router / custom | ❌ disabled or not exposed |
+
+**Rule of thumb:** if it's a single connected pipeline — one initiator, any chain of Agent / DB /
+retrieval blocks, fanning out to one or more destinations — it composes and runs today. Conditional
+branching, data reshaping, sub-workflows, and reactive-chat triggers do not yet.

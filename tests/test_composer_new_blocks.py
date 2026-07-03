@@ -51,11 +51,16 @@ def test_new_initiators_are_out_only_sources():
         assert dirs == {"out"}, f"{cls.__name__} must be out-only (a boundary source)"
 
 
-def test_new_destinations_are_in_only_sinks():
-    for cls in NEW_DESTINATIONS:
-        ports = cls().get_schema().ports
-        dirs = {p.direction for p in ports}
-        assert dirs == {"in"}, f"{cls.__name__} must be in-only (a sink)"
+def test_web_destination_is_in_only_sink():
+    dirs = {p.direction for p in WebDestination().get_schema().ports}
+    assert dirs == {"in"}, "WebDestination must be in-only (a sink)"
+
+
+def test_file_destination_has_passthrough_out():
+    # File Destination persists the file AND can hand its content onward (a tee): it has
+    # both an in and an out port. The out is a plain sink when nothing is wired to it.
+    dirs = {p.direction for p in FileDestination().get_schema().ports}
+    assert dirs == {"in", "out"}, "FileDestination should expose a pass-through out port"
 
 
 def test_new_destinations_require_target():
