@@ -504,8 +504,8 @@ class Initiator(Activity):
             label=self.label,
             ports=[Port("out", "out", STRING)],
             config=[
-                ConfigField("agent_id", "string", control="text", label="agent id",
-                            placeholder="the workflow this source fires (bound at deploy)"),
+                # No agent_id: the Project uid is the identity; firing routes by record_uid.
+                # The initiator carries only its binding (path / route / stream).
                 *self._binding_fields(),
             ],
         )
