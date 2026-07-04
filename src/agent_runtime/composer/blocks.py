@@ -416,10 +416,9 @@ class Trigger(Activity):
             label=self.label,
             ports=[Port("out", "out", ANY)],
             config=[
-                # Optional label / firing-asset ref. The Project uid is the real identity and
-                # the schedule key (proj-<uid>); agent_id is not load-bearing for firing, so it
-                # is NOT required (a fresh trigger must not raise a spurious deploy warning).
-                ConfigField("agent_id", "string", control="text", label="agent id (optional)"),
+                # No agent_id: in the graph-deploy model the Project uid is the identity and the
+                # schedule key (proj-<uid>); firing routes by record_uid, so the Trigger carries
+                # only the schedule (+ optional seed task) — no per-agent id.
                 ConfigField("schedule_mode", "enum", values=["cron", "interval", "date"],
                             default="cron", control="select", label="schedule mode"),
                 # --- cron mode ---
