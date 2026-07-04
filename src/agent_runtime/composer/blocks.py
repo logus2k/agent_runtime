@@ -582,6 +582,20 @@ class ConsoleSend(Initiator):
     kind = "console_send"
     label = "Console (Send)"
 
+    def get_schema(self) -> BlockSchema:
+        # A manual console has NO external binding, so it drops the generic 'agent id' field.
+        # Its only config is the message to send — editable here OR typed in the Send prompt.
+        return BlockSchema(
+            kind=self.kind,
+            category=self.category,
+            label=self.label,
+            ports=[Port("out", "out", STRING)],
+            config=[
+                ConfigField("message", "string", control="textarea", label="message",
+                            placeholder="the message to send (or type it when you click Send ▶)"),
+            ],
+        )
+
 
 class Transform(Activity):
     """A deterministic map ``in: schemaA -> out: schemaB``. Its body can be LLM-

@@ -1,0 +1,71 @@
+{
+  "version": "0.6",
+  "uid": "b9040c94327d",
+  "name": "Lab003",
+  "description": null,
+  "enabled": true,
+  "entry": "console_send:9",
+  "nodes": [
+    {
+      "id": "console_receive:4",
+      "kind": "destination",
+      "asset_ref": null,
+      "config": {
+        "channel": "console",
+        "target": ""
+      }
+    },
+    {
+      "id": "console_send:9",
+      "kind": "initiator",
+      "asset_ref": null,
+      "config": {
+        "type": "channel"
+      }
+    },
+    {
+      "id": "agent:7",
+      "kind": "agent",
+      "asset_ref": "general",
+      "config": {
+        "record": {
+          "version": "0.1",
+          "brain": {
+            "persona": "general",
+            "llm": {
+              "temperature": 0.3,
+              "max_tokens": 1024
+            }
+          },
+          "enabled": false,
+          "memory": {
+            "policy": "thread_window",
+            "max_turns": 20
+          },
+          "input": {
+            "template": "Act as a highly professional, honest, and collaborative AI assistant. Your primary directive is to assist the user by providing accurate, thoughtful, and well-structured responses. Maintain a consistently helpful, cooperative, and ethical tone in all interactions.\n\n{input}\n",
+            "vars": {}
+          },
+          "uid": "00000000-0000-4000-8000-000000000000",
+          "name": "7",
+          "delivery": {
+            "channel": "bus",
+            "target": "unused"
+          }
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src": "agent:7",
+      "dst": "console_receive:4",
+      "port": "out"
+    },
+    {
+      "src": "console_send:9",
+      "dst": "agent:7",
+      "port": "out"
+    }
+  ]
+}
