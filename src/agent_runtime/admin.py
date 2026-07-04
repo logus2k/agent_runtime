@@ -774,3 +774,51 @@ async def get_project(uid: str, request: Request) -> dict:
         raise HTTPException(status_code=404, detail=f"no deployed project '{uid}'")
     require_access(request, rec.owner)
     return rec.model_dump(mode="json", exclude_none=True)
+
+
+def _graph_fingerprint(rec: "GraphRecord") -> str:
+    """A stable STRUCTURAL fingerprint of a graph record: entry + nodes + edges only —
+    ignores version/name/enabled/owner (those don't change what the workflow DOES). Two
+    records with the same fingerprint are "in sync" for the status badge's purposes."""
+    d = rec.model_dump(mode="json")
+    core = {"entry": d.get("entry"), "nodes": d.get("nodes"), "edges": d.get("edges")}
+    return json.dumps(core, sort_keys=True, separators=(",", ":"))
+
+
+class StatusReq(BaseModel):
+    """A status-probe body: the live composition (litegraph ``serialize()`` shape) + name.
+    Same input as Deploy, but the endpoint NEVER persists — it's a pure dry run."""
+
+    name: str = ""
+    composition: dict[str, Any]
+
+
+@router.post("/projects/{uid}/status")
+async def project_status(uid: str, req: StatusReq, request: Request) -> dict:
+    """Deploy-readiness of a LIVE (not-yet-persisted) composition — powers Patron's status
+    badge. Lowers the posted composition with the SAME compiler as Deploy (``lower_project``)
+    but WITHOUT persisting, then reports: does it compile, is a record already deployed under
+    ``uid``, and is the live graph in sync with it.
+
+    Returns ``{ok, errors, warnings, deployed, deployed_version, in_sync}``. Read-only — never
+    mutates. Owner-gated: a deployed record the caller can't access is reported as
+    not-deployed (no existence leak). A structurally un-lowerable composition (e.g. empty) is
+    ``ok:false`` with the reason in ``errors`` (a 200, not an HTTP error — the badge shows it)."""
+    from .composer.lower import LoweringError, lower_project
+
+    p = principal(request)
+    rec = _graph_registry(request).get(uid)
+    visible = rec is not None and can_access(p, rec.owner)
+    result: dict[str, Any] = {
+        "deployed": bool(visible),
+        "deployed_version": rec.version if visible else None,
+    }
+    name = req.name or (rec.name if visible else "") or "Untitled Project"
+    try:
+        lowered, warnings = lower_project(uid, name, req.composition)
+    except LoweringError as exc:
+        result.update({"ok": False, "errors": [str(exc)], "warnings": [], "in_sync": False})
+        return result
+    result.update({"ok": True, "errors": [], "warnings": list(warnings)})
+    result["in_sync"] = (_graph_fingerprint(lowered) == _graph_fingerprint(rec)) if visible else None
+    return result

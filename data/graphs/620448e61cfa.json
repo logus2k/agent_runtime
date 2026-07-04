@@ -1,9 +1,11 @@
 {
-  "version": "0.1",
+  "version": "0.2",
   "uid": "620448e61cfa",
   "name": "Lab001",
   "description": null,
   "enabled": true,
+  "owner": "logus2k@gmail.com",
+  "owner_email": null,
   "entry": "file_initiator:1",
   "nodes": [
     {
@@ -14,14 +16,6 @@
         "channel": "file",
         "target": "/watched/out/result.txt",
         "mode": "overwrite"
-      }
-    },
-    {
-      "id": "file_initiator:1",
-      "kind": "initiator",
-      "asset_ref": null,
-      "config": {
-        "type": "channel"
       }
     },
     {
@@ -55,6 +49,14 @@
             "target": "unused"
           }
         }
+      }
+    },
+    {
+      "id": "file_initiator:1",
+      "kind": "initiator",
+      "asset_ref": null,
+      "config": {
+        "type": "channel"
       }
     }
   ],
