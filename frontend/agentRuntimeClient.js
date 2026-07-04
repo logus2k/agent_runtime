@@ -50,17 +50,15 @@ export class AgentRuntimeClient {
   // health
   health() { return this._request("GET", "/health"); }
 
-  // records
-  listAgents() { return this._request("GET", "/admin/agents"); }
-  listAgentsDetail() { return this._request("GET", "/admin/agents?detail=1"); }
-  // Deployed Agent Workflows (graph records) — the current model (agents moved to graph-deploy).
+  // Deployed Agent Workflows (graph records) — the current model. Authoring is in Patron
+  // (visual → graph-deploy); this admin page only MONITORS what's deployed.
   listProjects() { return this._request("GET", "/admin/projects"); }
   deleteProject(uid) { return this._request("DELETE", `/admin/projects/${encodeURIComponent(uid)}`); }
-  getAgent(uid) { return this._request("GET", `/admin/agents/${encodeURIComponent(uid)}`); }
-  createAgent(record) { return this._request("POST", "/admin/agents", record); }
-  updateAgent(uid, record) { return this._request("PUT", `/admin/agents/${encodeURIComponent(uid)}`, record); }
+
+  // Legacy flat agent records (the /admin/agents store — usually empty). No create/edit here
+  // anymore; kept only to list + enable/disable/delete any records that still exist.
+  listAgents() { return this._request("GET", "/admin/agents"); }
   deleteAgent(uid) { return this._request("DELETE", `/admin/agents/${encodeURIComponent(uid)}`); }
-  validateAgent(record) { return this._request("POST", "/admin/agents/validate", record); }
   enableAgent(uid) { return this._request("POST", `/admin/agents/${encodeURIComponent(uid)}/enable`); }
   disableAgent(uid) { return this._request("POST", `/admin/agents/${encodeURIComponent(uid)}/disable`); }
   reload() { return this._request("POST", "/admin/reload"); }
@@ -73,5 +71,4 @@ export class AgentRuntimeClient {
     return this._request("GET", `/admin/runs?${q.toString()}`);
   }
   consistency() { return this._request("GET", "/admin/consistency"); }
-  listWhatsappTargets() { return this._request("GET", "/admin/channels/whatsapp/targets"); }
 }

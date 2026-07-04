@@ -8,7 +8,6 @@ class AdminApp {
     const base = window.location.pathname.replace(/\/index\.html$/, "").replace(/\/$/, "");
     this.client = new AgentRuntimeClient(base);
     this.$ = (s) => document.querySelector(s);
-    this.editingUid = null;
   }
 
   init() {
@@ -18,17 +17,10 @@ class AdminApp {
     document.querySelectorAll(".tab").forEach((t) =>
       t.addEventListener("click", () => this.showTab(t.dataset.tab)));
 
-    this.form = this.$("#agent-form");
-    this.form.addEventListener("submit", (e) => this.onSubmit(e));
-    this.$("#validate-btn").addEventListener("click", () => this.onValidate());
-    this.$("#cancel-edit").addEventListener("click", () => this.exitEdit());
     this.$("#refresh-agents").addEventListener("click", () => this.loadAgents());
     this.$("#agents-body").addEventListener("click", (e) => this.onRowAction(e));
     this.$("#refresh-consistency").addEventListener("click", () => this.loadConsistency());
     this.$("#refresh-runs").addEventListener("click", () => this.loadRuns());
-    this.form.elements["delivery_channel"].addEventListener("change", () => this.onDeliveryChannelChange());
-    this.$("#wa-target-select").addEventListener("change", () => this.onWaSelect());
-    this.onDeliveryChannelChange(); // channel defaults to whatsapp -> show + load the picker
 
     this.pollHealth();
     this.loadAgents();
@@ -68,219 +60,6 @@ class AdminApp {
     } catch {
       dot.className = "dot bad";
       this.$("#health-text").textContent = "unavailable";
-    }
-  }
-
-  // --- form: collect / validate / submit ----------------------------------
-
-  _get(name) { const el = this.form.elements[name]; return el ? el.value.trim() : ""; }
-
-  collectRecord() {
-    const g = (n) => this._get(n);
-    const rec = {
-      version: g("version") || "0.1",
-      name: g("name"),
-      enabled: this.form.elements["active"].checked,
-      trigger: { type: g("trigger_type") },
-      brain: { persona: g("persona") },
-      input: { template: g("input_template"), vars: {} },
-      delivery: { channel: g("delivery_channel"), target: g("delivery_target") },
-    };
-    if (!rec.delivery.target) throw new Error("Delivery target required");
-    const desc = g("description"); if (desc) rec.description = desc;
-
-    const llm = {};
-    if (g("temperature")) llm.temperature = Number(g("temperature"));
-    if (g("max_tokens")) llm.max_tokens = Number(g("max_tokens"));
-    if (Object.keys(llm).length) rec.brain.llm = llm;
-
-    const server = g("tools_server");
-    if (server) {
-      rec.tools = { server, allow: g("tools_allow").split(/[\s,]+/).filter(Boolean) };
-      if (g("tools_max_rounds")) rec.tools.max_rounds = Number(g("tools_max_rounds"));
-    }
-
-    const varsRaw = g("input_vars");
-    if (varsRaw) {
-      let parsed;
-      try { parsed = JSON.parse(varsRaw); }
-      catch { throw new Error("Input vars must be valid JSON"); }
-      rec.input.vars = parsed;
-    }
-    if (this.editingUid) rec.uid = this.editingUid;
-    return rec;
-  }
-
-  msg(text, kind) {
-    const m = this.$("#form-msg");
-    m.className = `form-msg ${kind || ""}`;
-    m.textContent = text;
-  }
-
-  async onValidate() {
-    let rec;
-    try { rec = this.collectRecord(); }
-    catch (e) { return this.msg(e.message, "bad"); }
-    try {
-      const r = await this.client.validateAgent(rec);
-      if (r.ok) this.msg("✓ valid record", "ok");
-      else this.msg("Invalid:\n- " + r.errors.map((e) => `${e.loc}: ${e.msg}`).join("\n- "), "bad");
-    } catch (e) { this.msg(this.describe(e), "bad"); }
-  }
-
-  async onSubmit(event) {
-    event.preventDefault();
-    let rec;
-    try { rec = this.collectRecord(); }
-    catch (e) { return this.msg(e.message, "bad"); }
-    try {
-      if (this.editingUid) {
-        const r = await this.client.updateAgent(this.editingUid, rec);
-        this.toast(`Saved ${r.name}`, "ok");
-        this.exitEdit();
-      } else {
-        const r = await this.client.createAgent(rec);
-        this.toast(`Created ${r.name} (${r.uid.slice(0, 8)})`, "ok");
-        this.form.reset();
-      }
-      this.loadAgents();
-    } catch (e) { this.msg(this.describe(e), "bad"); }
-  }
-
-  // --- edit mode ----------------------------------------------------------
-
-  // Fill every form field from a record (shared by Edit and Duplicate).
-  _fillForm(rec) {
-    const set = (n, v) => { const el = this.form.elements[n]; if (el) el.value = v ?? ""; };
-    set("name", rec.name); set("uid", rec.uid); set("version", rec.version || "0.1");
-    this.form.elements["active"].checked = rec.enabled !== false;
-    set("description", rec.description);
-    set("trigger_type", rec.trigger?.type || "schedule");
-    set("persona", rec.brain?.persona);
-    set("temperature", rec.brain?.llm?.temperature);
-    set("max_tokens", rec.brain?.llm?.max_tokens);
-    set("tools_server", rec.tools?.server);
-    set("tools_allow", (rec.tools?.allow || []).join(" "));
-    set("tools_max_rounds", rec.tools?.max_rounds);
-    set("input_template", rec.input?.template);
-    set("input_vars",
-      rec.input?.vars && Object.keys(rec.input.vars).length ? JSON.stringify(rec.input.vars, null, 2) : "");
-    set("delivery_channel", rec.delivery?.channel || "whatsapp");
-    set("delivery_target", rec.delivery?.target);
-    this.onDeliveryChannelChange(rec.delivery?.target); // show + preselect the picker
-  }
-
-  async enterEdit(uid) {
-    let rec;
-    try { rec = await this.client.getAgent(uid); }
-    catch (e) { return this.toast(this.describe(e), "bad"); }
-    this.editingUid = uid;
-    this._fillForm(rec);
-    this.$("#uid-field").hidden = false;
-    this.$("#form-title").textContent = `Edit agent: ${rec.name}`;
-    this.$("#submit-btn").textContent = "Save";
-    this.$("#cancel-edit").hidden = false;
-    this.msg("", "");
-    this.$("#agent-form").scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
-  // Duplicate: load an existing record into the form in CREATE mode (no uid -> the
-  // server assigns a fresh one on save). Only the name is pre-changed.
-  async enterDuplicate(uid) {
-    let rec;
-    try { rec = await this.client.getAgent(uid); }
-    catch (e) { return this.toast(this.describe(e), "bad"); }
-    this.editingUid = null;                    // create a NEW record on save
-    this._fillForm(rec);
-    this.form.elements["name"].value = `Copy of ${rec.name}`;
-    this.$("#uid-field").hidden = true;        // create mode shows no uid
-    this.$("#form-title").textContent = `Create agent (copy of ${rec.name})`;
-    this.$("#submit-btn").textContent = "Create";
-    this.$("#cancel-edit").hidden = false;
-    this.msg("Duplicated — change what you need, then Create.", "ok");
-    this.$("#agent-form").scrollIntoView({ behavior: "smooth", block: "start" });
-    this.form.elements["name"].focus();
-    this.form.elements["name"].select();
-  }
-
-  exitEdit() {
-    this.editingUid = null;
-    this.form.reset();
-    this.$("#uid-field").hidden = true;
-    this.$("#form-title").textContent = "Create agent";
-    this.$("#submit-btn").textContent = "Create";
-    this.$("#cancel-edit").hidden = true;
-    this.msg("", "");
-    this.onDeliveryChannelChange(); // reset() restores channel=whatsapp -> refresh picker
-  }
-
-  // --- delivery target dropdown (whatsapp) --------------------------------
-
-  // whatsapp -> show the chat picker (and the text box only when "Type an id…" is
-  // chosen). bus/tts -> no picker, just the text box.
-  onDeliveryChannelChange(selectedId) {
-    const sel = this.$("#wa-target-select");
-    const inp = this.form.elements["delivery_target"];
-    const isWa = this.form.elements["delivery_channel"].value === "whatsapp";
-    sel.hidden = !isWa;
-    if (isWa) {
-      this.loadWaTargets(selectedId ?? inp.value); // manages the text box visibility
-    } else {
-      inp.hidden = false; // bus/tts: free text only
-    }
-  }
-
-  // A real chat -> store its id and hide the box; "Type an id…" -> reveal the box;
-  // placeholder -> hide + clear.
-  onWaSelect() {
-    const v = this.$("#wa-target-select").value;
-    const inp = this.form.elements["delivery_target"];
-    if (v === "__custom__") {
-      inp.hidden = false; inp.focus();
-    } else if (v) {
-      inp.value = v; inp.hidden = true;
-    } else {
-      inp.value = ""; inp.hidden = true;
-    }
-  }
-
-  async loadWaTargets(selectedId) {
-    const sel = this.$("#wa-target-select");
-    const inp = this.form.elements["delivery_target"];
-    sel.innerHTML = `<option value="">— loading chats… —</option>`;
-    inp.hidden = true;
-    const fallbackToTyping = (label) => {
-      sel.innerHTML = `<option value="__custom__">${label}</option>`;
-      sel.value = "__custom__";
-      inp.hidden = false;
-      if (selectedId) inp.value = selectedId;
-    };
-    let data;
-    try {
-      data = await this.client.listWhatsappTargets();
-    } catch (e) {
-      return fallbackToTyping("Type an id… (couldn't load chats)");
-    }
-    if (!data.bridge_ok) {
-      return fallbackToTyping("Type an id… (chat list unavailable)");
-    }
-    const groups = data.targets.filter((t) => t.kind === "group");
-    const contacts = data.targets.filter((t) => t.kind === "contact");
-    const optList = (arr) => arr.map((t) =>
-      `<option value="${this.esc(t.id)}">${this.esc(t.name)}</option>`).join("");
-    let html = `<option value="">— select a WhatsApp chat —</option>`;
-    html += `<option value="__custom__">Type an id…</option>`;
-    if (groups.length) html += `<optgroup label="Groups">${optList(groups)}</optgroup>`;
-    if (contacts.length) html += `<optgroup label="Contacts">${optList(contacts)}</optgroup>`;
-    sel.innerHTML = html;
-    // Preselect from the current target: a known chat -> select it (box hidden);
-    // anything else -> "Type an id…" with the box shown holding that value.
-    if (selectedId && data.targets.some((t) => t.id === selectedId)) {
-      sel.value = selectedId; inp.value = selectedId; inp.hidden = true;
-    } else if (selectedId) {
-      sel.value = "__custom__"; inp.value = selectedId; inp.hidden = false;
-    } else {
-      sel.value = ""; inp.hidden = true;
     }
   }
 
@@ -349,8 +128,6 @@ class AdminApp {
       <td>${tools}</td>
       <td>${this.esc(a.delivery_channel)} → <code>${this.esc(a.delivery_target)}</code></td>
       <td class="row-actions">
-        <button class="sm" data-act="edit" data-uid="${this.esc(a.uid)}">Edit</button>
-        <button class="sm" data-act="duplicate" data-uid="${this.esc(a.uid)}">Copy</button>
         ${toggle}
         <button class="sm" data-act="runs" data-uid="${this.esc(a.uid)}">Runs</button>
         <button class="sm danger" data-act="delete" data-uid="${this.esc(a.uid)}" data-name="${this.esc(a.name)}">Delete</button>
@@ -362,8 +139,6 @@ class AdminApp {
     const btn = event.target.closest("button[data-act]");
     if (!btn) return;
     const { act, uid, name } = btn.dataset;
-    if (act === "edit") return this.enterEdit(uid);
-    if (act === "duplicate") return this.enterDuplicate(uid);
     if (act === "enable" || act === "disable") {
       try {
         await (act === "enable" ? this.client.enableAgent(uid) : this.client.disableAgent(uid));
@@ -390,7 +165,6 @@ class AdminApp {
       if (!confirm(`Hard-delete agent "${name}"?\nThis removes the record permanently.`)) return;
       try {
         await this.client.deleteAgent(uid);
-        if (this.editingUid === uid) this.exitEdit();
         this.toast(`Deleted ${name}`, "ok");
         this.loadAgents();
       } catch (e) { this.toast(this.describe(e), "bad"); }
