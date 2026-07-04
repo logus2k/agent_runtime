@@ -46,6 +46,13 @@ from .skills.registry import SkillRegistry, get_registry
 log = logging.getLogger("agent_runtime.runner")
 
 
+def _preview(value, cap: int = 4000) -> str:
+    """A size-capped string preview of an edge payload for the Trace stream (never dumps a
+    huge/binary value inline)."""
+    s = "" if value is None else str(value)
+    return s if len(s) <= cap else s[:cap] + f"…[+{len(s) - cap} chars]"
+
+
 def ir_from_record(record: AgentRecord) -> IRGraph:
     """Build the graph-form IR for a linear agent record: trigger → agent →
     destination. The destination node's kind is its channel, so the runner registers a
@@ -284,7 +291,9 @@ class Runner:
                 {"agent_uid": node_record.uid, "agent_name": node_record.name}
                 if node_record is not None else {"agent_uid": record.uid, "agent_name": record.name}
             )
-            await self._emit(cid, event_type, {**lbl, **data})
+            # Stamp the project record_uid on EVERY event so the SSE (Trace panel) can filter
+            # a whole run by project — not just console.output.
+            await self._emit(cid, event_type, {"record_uid": record.uid, **lbl, **data})
 
         async def h_initiator(node: GraphNode, value, ctx: WalkContext):
             # The workflow's seed: an optional task carried on the trigger event. The
@@ -441,8 +450,10 @@ class Runner:
             # delivery_id stays in the agent.result trace above.
             return value
 
-        def on_trace(src: str, dst: str, port: str, ctx: WalkContext) -> None:
-            ctx.scratch.setdefault("edges", []).append((src, dst, port))
+        async def on_trace(src: str, dst: str, port: str, value, ctx: WalkContext) -> None:
+            # Live per-edge trace carrying the PAYLOAD flowing on the wire (the Trace panel).
+            await emit_for(None, "edge.traversed",
+                           {"src": src, "dst": dst, "port": port, "payload": _preview(value)})
 
         handlers = {
             "initiator": h_initiator,
@@ -455,13 +466,12 @@ class Runner:
         }
         walk_ctx = WalkContext(cid=cid, sender=self._settings.sender_id)
         await GraphWorkflowExecutor(handlers, on_trace=on_trace).run(record, None, walk_ctx)
-
-        for src, dst, port in walk_ctx.scratch.get("edges", []):
-            await self._emit(cid, "edge.traversed", {"src": src, "dst": dst, "port": port})
+        # edge.traversed is now emitted LIVE per edge inside on_trace (with payload).
 
         await self._emit(
             cid, "workflow.terminated",
-            {"reason": "done", "turns": walk_ctx.scratch.get("turns_used", 0),
+            {"record_uid": record.uid, "reason": "done",
+             "turns": walk_ctx.scratch.get("turns_used", 0),
              "agent_uid": record.uid, "agent_name": record.name},
         )
 

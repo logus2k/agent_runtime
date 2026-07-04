@@ -707,8 +707,12 @@ async def project_events(uid: str, request: Request) -> StreamingResponse:
                     yield ": keepalive\n\n"
                     continue
                 data = ev.get("data") or {}
-                if ev.get("event_type") == "console.output" and data.get("record_uid") == uid:
-                    yield f"data: {json.dumps(data)}\n\n"
+                # Trace panel: forward EVERY event of this record (owner-gated above) — the
+                # frame carries the event type + cid so the browser groups/orders a run and
+                # Console (Receive) filters `event == "console.output"`.
+                if data.get("record_uid") == uid:
+                    frame = {"event": ev.get("event_type"), "cid": ev.get("cid"), **data}
+                    yield f"data: {json.dumps(frame)}\n\n"
         finally:
             hub.unsubscribe(q)
 

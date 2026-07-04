@@ -30,8 +30,9 @@ log = logging.getLogger("agent_runtime.graph_executor")
 
 # A handler runs one node for one incoming message: (node, value, ctx) -> out_value.
 NodeHandler = Callable[[GraphNode, Any, "WalkContext"], Awaitable[Any]]
-# A trace hook, called once per edge crossed (src, dst, port, ctx).
-TraceHook = Callable[[str, str, str, "WalkContext"], None]
+# A trace hook, awaited once per edge crossed: (src, dst, port, value, ctx). ``value`` is the
+# payload flowing on that edge (the source node's output) — for the live Trace panel.
+TraceHook = Callable[[str, str, str, Any, "WalkContext"], Awaitable[None]]
 
 
 @dataclass
@@ -110,7 +111,7 @@ class GraphWorkflowExecutor:
             # Fan-out: deliver the output to EVERY successor as an independent message.
             for edge in successors:
                 if self._on_trace is not None:
-                    self._on_trace(edge.src, edge.dst, edge.port, ctx)
+                    await self._on_trace(edge.src, edge.dst, edge.port, out_value, ctx)
                 queue.append(_Msg(edge.dst, out_value))
 
         return ctx
