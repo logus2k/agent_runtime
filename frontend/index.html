@@ -25,14 +25,16 @@
 
   <main>
     <nav class="tabs">
-      <button class="tab active" data-tab="agents">Agents</button>
+      <button class="tab active" data-tab="agents">Agent Workflows</button>
       <button class="tab" data-tab="consistency">Consistency</button>
       <button class="tab" data-tab="runs">Runs</button>
     </nav>
 
     <!-- ================= AGENTS ================= -->
     <section class="tab-panel" data-panel="agents">
-      <section class="panel">
+      <!-- Create/Edit Agent form — OBSOLETE: authoring moved to Patron (visual → graph-deploy).
+           Hidden; the admin frontend is now a monitor of deployed Agent Workflows. -->
+      <section class="panel" hidden>
         <h2 id="form-title">Create agent</h2>
         <form id="agent-form" autocomplete="off">
           <div class="grid">
@@ -153,12 +155,12 @@
 
       <section class="panel">
         <div class="panel-head">
-          <h2>Agents <span class="muted" id="agent-count"></span></h2>
+          <h2>Agent Workflows <span class="muted" id="agent-count"></span></h2>
           <button id="refresh-agents" class="ghost">Refresh</button>
         </div>
         <table id="agents-table">
           <thead>
-            <tr><th>Name</th><th>Uid</th><th>Trigger</th><th>Persona</th><th>Tools</th><th>Delivery</th><th>Actions</th></tr>
+            <tr><th>Name</th><th>Uid</th><th>Entry</th><th>Version</th><th>Graph</th><th>Type</th><th>Actions</th></tr>
           </thead>
           <tbody id="agents-body"><tr><td colspan="7" class="muted">loading…</td></tr></tbody>
         </table>

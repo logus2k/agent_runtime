@@ -53,6 +53,9 @@ export class AgentRuntimeClient {
   // records
   listAgents() { return this._request("GET", "/admin/agents"); }
   listAgentsDetail() { return this._request("GET", "/admin/agents?detail=1"); }
+  // Deployed Agent Workflows (graph records) — the current model (agents moved to graph-deploy).
+  listProjects() { return this._request("GET", "/admin/projects"); }
+  deleteProject(uid) { return this._request("DELETE", `/admin/projects/${encodeURIComponent(uid)}`); }
   getAgent(uid) { return this._request("GET", `/admin/agents/${encodeURIComponent(uid)}`); }
   createAgent(record) { return this._request("POST", "/admin/agents", record); }
   updateAgent(uid, record) { return this._request("PUT", `/admin/agents/${encodeURIComponent(uid)}`, record); }

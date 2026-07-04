@@ -37,6 +37,12 @@ def principal(request: Request) -> str:
         if token and request.headers.get(INTERNAL_HEADER) != token:
             return settings.default_principal
         return header_user
+    # Direct-to-farm callers behind the edge proxy (e.g. the admin frontend, which does NOT
+    # go through serve.py) carry the proxy's verified identity instead of X-Patron-User.
+    proxy_user = (request.headers.get("X-Auth-Request-User")
+                  or request.headers.get("X-Auth-Request-Email"))
+    if proxy_user:
+        return proxy_user
     return settings.default_principal
 
 

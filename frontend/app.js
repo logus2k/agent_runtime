@@ -289,19 +289,49 @@ class AdminApp {
   async loadAgents() {
     const body = this.$("#agents-body");
     try {
-      const { agents } = await this.client.listAgents();
-      this.$("#agent-count").textContent = `(${agents.length})`;
-      const active = agents.filter((a) => a.enabled !== false).length;
-      this.$("#health-text").textContent = `${active} active · ${agents.length - active} inactive`;
-      this._populateRunsAgents(agents);
-      if (!agents.length) {
-        body.innerHTML = `<tr><td colspan="7" class="muted">no agents yet</td></tr>`;
+      // The deployed model is graph records (Agent Workflows) via /admin/projects; the legacy
+      // flat /admin/agents store is (usually) empty. Show projects first, then any legacy agents.
+      const [projRes, agentRes] = await Promise.all([
+        this.client.listProjects().catch(() => ({ projects: [] })),
+        this.client.listAgents().catch(() => ({ agents: [] })),
+      ]);
+      const projects = projRes.projects || [];
+      const agents = agentRes.agents || [];
+      const total = projects.length + agents.length;
+      this.$("#agent-count").textContent = `(${total})`;
+      const active = projects.filter((p) => p.enabled !== false).length
+        + agents.filter((a) => a.enabled !== false).length;
+      this.$("#health-text").textContent = `${active} active · ${total - active} inactive`;
+      this._populateRunsAgents(agents.concat(projects.map((p) => ({ uid: p.uid, name: p.name }))));
+      if (!total) {
+        body.innerHTML = `<tr><td colspan="7" class="muted">no deployed workflows yet</td></tr>`;
         return;
       }
-      body.innerHTML = agents.map((a) => this.rowHtml(a)).join("");
+      body.innerHTML = projects.map((p) => this.projectRowHtml(p)).join("")
+        + agents.map((a) => this.rowHtml(a)).join("");
     } catch (e) {
       body.innerHTML = `<tr><td colspan="7" class="form-msg bad">${this.esc(this.describe(e))}</td></tr>`;
     }
+  }
+
+  // A deployed Agent Workflow (GraphRecord from /admin/projects).
+  projectRowHtml(p) {
+    const inactive = p.enabled === false;
+    const badge = inactive
+      ? ` <span class="badge warn">disabled</span>`
+      : ` <span class="badge">deployed</span>`;
+    return `<tr${inactive ? ' class="row-inactive"' : ""}>
+      <td><strong>${this.esc(p.name)}</strong>${badge}</td>
+      <td><code>${this.esc(String(p.uid).slice(0, 8))}</code></td>
+      <td>${this.esc(p.entry || "—")}</td>
+      <td>v${this.esc(String(p.version))}</td>
+      <td>${p.nodes} nodes · ${p.edges} edges</td>
+      <td class="muted">workflow</td>
+      <td class="row-actions">
+        <button class="sm" data-act="runs" data-uid="${this.esc(p.uid)}">Runs</button>
+        <button class="sm danger" data-act="undeploy" data-uid="${this.esc(p.uid)}" data-name="${this.esc(p.name)}">Undeploy</button>
+      </td>
+    </tr>`;
   }
 
   rowHtml(a) {
@@ -346,6 +376,15 @@ class AdminApp {
       this.showTab("runs");
       this.$("#runs-agent").value = uid;
       return this.loadRuns();
+    }
+    if (act === "undeploy") {
+      if (!confirm(`Undeploy workflow "${name}"?\nRemoves the live record + firing binding.`)) return;
+      try {
+        await this.client.deleteProject(uid);
+        this.toast(`Undeployed ${name}`, "ok");
+        this.loadAgents();
+      } catch (e) { this.toast(this.describe(e), "bad"); }
+      return;
     }
     if (act === "delete") {
       if (!confirm(`Hard-delete agent "${name}"?\nThis removes the record permanently.`)) return;
