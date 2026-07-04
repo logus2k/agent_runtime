@@ -18,7 +18,20 @@ from agent_runtime.composer import (
     Trigger,
     WhatsApp,
 )
+from agent_runtime.composer.blocks import DataJson
 from agent_runtime.composer.schema import ANY, STRING, BlockSchema, DataSchema, Port
+
+
+def test_data_block_content_must_be_a_json_object():
+    assert any("content" in e for e in DataJson(config={"content": "{not json"}).validate())
+    assert any("content" in e for e in DataJson(config={"content": "[1, 2]"}).validate())  # array≠object
+    assert DataJson(config={"content": '{"a": 1}'}).validate() == []
+    assert DataJson().validate() == []  # empty content is fine (→ {})
+    assert DataJson(config={"content": '{"a": 1}'}).lower() == {"content": {"a": 1}}
+
+
+def test_data_block_is_in_the_catalog():
+    assert "data" in {e["type"] for e in Catalog().entries()}
 
 
 # --- DataSchema: structural compatibility --------------------------------------

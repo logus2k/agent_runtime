@@ -25,6 +25,7 @@ Loop/Composite live in the graph-form IR (``ir.py``) and execute via the GraphEx
 
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
 from .catalog import BLOCK_TYPES
@@ -250,6 +251,17 @@ class Graph:
             name = None
         return name or "out"
 
+    @staticmethod
+    def _in_slot_label(node: dict[str, Any], slot: Any) -> str:
+        """The destination in-port label for a link's target slot (e.g. an Agent's ``vars``
+        input vs its task ``in``). Defaults to ``"in"``."""
+        inputs = (node or {}).get("inputs") or []
+        try:
+            name = inputs[int(slot)].get("name")
+        except (IndexError, TypeError, ValueError, AttributeError):
+            name = None
+        return name or "in"
+
     def _agent_record(self, node: dict[str, Any], frag: dict[str, Any]) -> dict[str, Any]:
         """Wrap an Agent block's ``lower()`` fragment into a fully-formed
         ``AgentRecord``-shaped dict. ``run_brain`` reads only brain/tools/name, so an
@@ -332,6 +344,7 @@ _KIND_MAP: dict[str, str] = {
     # Standalone data-source query blocks (emit results into the flow).
     "vector_query": "vector_query",
     "graph_query": "graph_query",
+    "data": "data",  # Data (JSON): emits a literal JSON object as its flow value
     "whatsapp": "destination",
     "tts": "destination",
     "bus": "destination",
@@ -407,6 +420,19 @@ def _decompose_agent_capabilities(nodes, edges):
     return new_nodes, new_edges
 
 
+def _as_obj(v: Any) -> dict[str, Any]:
+    """Coerce a JSON-object value (dict, or a JSON string) to a dict; {} otherwise."""
+    if isinstance(v, dict):
+        return v
+    if isinstance(v, str) and v.strip():
+        try:
+            d = json.loads(v)
+            return d if isinstance(d, dict) else {}
+        except (json.JSONDecodeError, ValueError):
+            return {}
+    return {}
+
+
 class ProjectLowering:
     """Lower a Patron Project composition into a ``GraphRecord`` + advisory warnings.
 
@@ -418,12 +444,50 @@ class ProjectLowering:
         self._uid = uid
         self._name = name
         self._graph = Graph(composition or {})
+        # Fold inline Data blocks on an Agent's `vars` port into input_vars (compile-time, §7.1)
+        # BEFORE building the id maps, so the folded-out nodes/edges never reach the record.
+        self._fold_data_vars()
         # Stable per-composition node id: "<type>:<litegraph id>" (unique + readable),
         # matching the IR node_key convention so a GraphRecord node id is traceable
         # back to its canvas block.
         self._gid: dict[Any, str] = {}
         for n in self._graph.nodes:
             self._gid[n.get("id")] = f"{n.get('type')}:{n.get('id')}"
+
+    def _fold_data_vars(self) -> None:
+        """Compile-time vars merge (§7.1): an INLINE Data (JSON) block wired into an Agent's
+        ``vars`` port is folded into that Agent's ``input_vars`` (precedence: input_vars < wired
+        Data < event.vars), then the Data node + that edge are removed — config, not a runtime
+        step. A Data node kept for OTHER wires (a general flow source) stays. No runtime change:
+        ``input.vars`` already carries it."""
+        g = self._graph
+        out_count: dict[Any, int] = {}   # data node id -> total outgoing links
+        for lk in g.links:
+            if len(lk) >= 4 and (g._node(lk[1]) or {}).get("type") == "data":
+                out_count[lk[1]] = out_count.get(lk[1], 0) + 1
+        folded: list[list[Any]] = []
+        for lk in g.links:
+            if len(lk) < 5:
+                continue
+            src, dst = g._node(lk[1]), g._node(lk[3])
+            if not src or not dst or src.get("type") != "data" or dst.get("type") != "agent":
+                continue
+            if Graph._in_slot_label(dst, lk[4]) != "vars":
+                continue
+            content = _as_obj(Graph._props(src).get("content"))
+            if content:
+                props = dst.setdefault("properties", {})
+                props["input_vars"] = {**_as_obj(props.get("input_vars")), **content}
+            folded.append(lk)
+        if not folded:
+            return
+        for lk in folded:
+            out_count[lk[1]] = out_count.get(lk[1], 1) - 1
+        g.links = [lk for lk in g.links if lk not in folded]
+        drop = {nid for nid, c in out_count.items() if c <= 0}
+        if drop:
+            g.nodes = [n for n in g.nodes if n.get("id") not in drop]
+            g._by_id = {n.get("id"): n for n in g.nodes}
 
     # ---- helpers ----
     def _initiators(self) -> list[dict[str, Any]]:

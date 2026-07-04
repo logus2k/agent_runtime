@@ -184,6 +184,10 @@ class Agent(Block):
             kind=self.kind,
             category=self.category,
             label=self.label,
+            # `in` = the task (→ {input}); `out` = the answer. The Agent also has a second input
+            # slot **`vars`** (a JSON object merged into input.vars — a Data block wires here),
+            # added on the Patron node; the catalog serializes ports by direction, and the fold
+            # reads the serialized node inputs, so `vars` need not be a schema Port here.
             ports=[Port("in", "in", STRING), Port("out", "out", STRING)],
             config=[
                 # Identity/status lead the panel (authoring UX): enabled, persona, description.
@@ -697,6 +701,43 @@ class GraphDatabase(Block):
         if self.cfg("query"):
             cfg["query"] = self.cfg("query")
         return cfg
+
+
+class DataJson(Block):
+    """Data (JSON): emits a literal JSON **object** as its flow value. Wire its ``out`` into an
+    Agent's ``vars`` port to supply the Agent's named template variables ({topic}, {n}) — an
+    inline Data block is folded into the Agent's ``input.vars`` at COMPILE time (no runtime step).
+    It is also a general flow source: its JSON is emitted at run time wherever the executor reaches
+    it (``h_data``)."""
+
+    kind = "data"
+    category = "Block"
+    label = "Data (JSON)"
+
+    def get_schema(self) -> BlockSchema:
+        return BlockSchema(
+            kind=self.kind,
+            category=self.category,
+            label=self.label,
+            ports=[Port("out", "out", ANY)],
+            config=[
+                ConfigField("content", "json", control="json", label="JSON content",
+                            placeholder='{ "topic": "AI agents", "n": 5 }'),
+            ],
+        )
+
+    def validate(self) -> list[str]:
+        errors = super().validate()
+        # content must parse to a JSON OBJECT (mirrors the Agent's input_vars rule).
+        if self.cfg("content") not in (None, ""):
+            try:
+                _json_obj(self.cfg("content"), where=f"{self.label} content")
+            except ValueError as exc:
+                errors.append(str(exc))
+        return errors
+
+    def lower(self) -> dict[str, Any]:
+        return {"content": _json_obj(self.cfg("content"), where=f"{self.label} content")}
 
 
 # --------------------------------------------------------------------------- #

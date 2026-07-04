@@ -23,6 +23,7 @@ from .blocks import (
     Composite,
     ConsoleReceive,
     ConsoleSend,
+    DataJson,
     FileDestination,
     FileInitiator,
     GraphDatabase,
@@ -49,6 +50,8 @@ BLOCK_TYPES: dict[str, type[Block]] = {
     # Standalone data-source blocks (§ retriever): query a vector/graph DB, emit results.
     VectorDatabase.kind: VectorDatabase,
     GraphDatabase.kind: GraphDatabase,
+    # Data (JSON): emit a literal JSON object → an Agent's `vars` port (or a general flow source).
+    DataJson.kind: DataJson,
     # New boundary SOURCES (§9.3.1) — out-only initiators, inert in graph execution.
     FileInitiator.kind: FileInitiator,
     WebInitiator.kind: WebInitiator,

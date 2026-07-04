@@ -40,6 +40,70 @@ def test_linear_trigger_agent_whatsapp():
     assert warnings == []
 
 
+def test_data_block_on_vars_port_folds_into_agent_input_vars():
+    """An inline Data (JSON) block wired to an Agent's `vars` port (input slot 1) is folded
+    into the Agent's input.vars at compile time (data overrides input_vars defaults), and the
+    Data node is removed from the record (§7.1)."""
+    comp = {
+        "nodes": [
+            _trigger(),
+            {"id": 2, "type": "agent",
+             "properties": {"persona": "p", "input_vars": {"n": 5}},
+             "inputs": [{"name": "in", "link": 1}, {"name": "vars", "link": 3}],
+             "outputs": [{"name": "out", "links": [2]}]},
+            {"id": 3, "type": "bus", "properties": {"target": "b"},
+             "inputs": [{"name": "in", "link": 2}]},
+            {"id": 4, "type": "data", "properties": {"content": {"topic": "AI", "n": 9}},
+             "outputs": [{"name": "out", "links": [3]}]},
+        ],
+        "links": [[1, 1, 0, 2, 0, "string"],
+                  [2, 2, 0, 3, 0, "string"],
+                  [3, 4, 0, 2, 1, "any"]],  # data(4).out -> agent(2).vars (input slot 1)
+    }
+    rec, warnings = lower_project("u", "D", comp)
+    assert "data" not in {n.kind for n in rec.nodes}  # folded out (compile-time, no runtime node)
+    agent = next(n for n in rec.nodes if n.kind == "agent")
+    assert agent.config["record"]["input"]["vars"] == {"n": 9, "topic": "AI"}  # data > default n:5
+
+
+def test_data_block_content_as_json_string_folds_too():
+    """The Data block's content may arrive as a JSON STRING (Patron's json editor) — still folds."""
+    comp = {
+        "nodes": [
+            _trigger(),
+            {"id": 2, "type": "agent", "properties": {"persona": "p"},
+             "inputs": [{"name": "in", "link": 1}, {"name": "vars", "link": 3}],
+             "outputs": [{"name": "out", "links": [2]}]},
+            {"id": 3, "type": "bus", "properties": {"target": "b"},
+             "inputs": [{"name": "in", "link": 2}]},
+            {"id": 4, "type": "data", "properties": {"content": '{"topic": "safety"}'},
+             "outputs": [{"name": "out", "links": [3]}]},
+        ],
+        "links": [[1, 1, 0, 2, 0, "string"], [2, 2, 0, 3, 0, "string"], [3, 4, 0, 2, 1, "any"]],
+    }
+    rec, _ = lower_project("u", "D", comp)
+    agent = next(n for n in rec.nodes if n.kind == "agent")
+    assert agent.config["record"]["input"]["vars"] == {"topic": "safety"}
+
+
+def test_data_block_wired_to_a_normal_in_stays_as_a_flow_node():
+    """A Data block NOT on a `vars` port (here → an Agent's task `in`) is NOT folded — it stays
+    as a runtime `data` node (the general flow-source path, h_data)."""
+    comp = {
+        "nodes": [
+            {"id": 2, "type": "agent", "properties": {"persona": "p"},
+             "inputs": [{"name": "in", "link": 3}], "outputs": [{"name": "out", "links": [2]}]},
+            {"id": 3, "type": "bus", "properties": {"target": "b"},
+             "inputs": [{"name": "in", "link": 2}]},
+            {"id": 4, "type": "data", "properties": {"content": {"x": 1}},
+             "outputs": [{"name": "out", "links": [3]}]},
+        ],
+        "links": [[3, 4, 0, 2, 0, "any"], [2, 2, 0, 3, 0, "string"]],  # data(4)->agent(2).in (slot 0)
+    }
+    rec, _ = lower_project("u", "D", comp)
+    assert "data" in {n.kind for n in rec.nodes}  # kept — it's on the flow path, not folded
+
+
 def test_agent_with_rag_pre_decomposes_into_a_rag_node_before_the_agent():
     """An Agent carrying RAG-pre config (rag_domains) must lower to a `rag` node wired
     BEFORE the agent (initiator→rag→agent→dest), so the executor's h_rag runs it. §8.1."""

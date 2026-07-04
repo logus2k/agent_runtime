@@ -41,7 +41,8 @@ _VERSION_RE = re.compile(r"^(\d+)\.(\d+)$")
 # (File/Web destinations) all lower to ``destination`` — several block TYPES, one node
 # KIND — so this Literal is unchanged: the specific channel/source lives in node config.
 NodeKind = Literal[
-    "initiator", "rag", "vector_query", "graph_query", "guardrail", "agent", "destination"
+    "initiator", "rag", "vector_query", "graph_query", "guardrail", "agent", "destination",
+    "data",
 ]
 
 

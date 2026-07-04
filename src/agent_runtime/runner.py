@@ -339,6 +339,13 @@ class Runner:
                               "query": query[:200], "hit": bool(out)})
             return out
 
+        async def h_data(node: GraphNode, value, ctx: WalkContext):
+            # Data (JSON) block: emit its literal JSON object as the flow value (a general flow
+            # source). When wired to an Agent's `vars` port it is folded at COMPILE time (there
+            # is no `data` node here at all); this handler covers the case where a Data block is
+            # on the runtime flow path (e.g. feeding a normal `in`).
+            return node.config.get("content")
+
         async def h_agent(node: GraphNode, value, ctx: WalkContext):
             node_record = self._graph_agent_record(node)
             mcp = self._make_mcp(node_record)
@@ -460,6 +467,7 @@ class Runner:
             "rag": h_rag,
             "vector_query": h_vector_query,
             "graph_query": h_graph_query,
+            "data": h_data,
             "agent": h_agent,
             "guardrail": h_guardrail,
             "destination": h_destination,
