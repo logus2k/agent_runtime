@@ -160,8 +160,8 @@ def _persist_and_upsert(request: Request, record: AgentRecord) -> Path:
 @router.get("/agents")
 async def list_agents(request: Request, detail: int = 0) -> dict:
     reg = _registry(request)
-    p = principal(request)
-    items = [r for r in reg.all() if can_access(p, getattr(r, "owner", None))]
+    p, email = principal(request), principal_email(request)
+    items = [r for r in reg.all() if can_access(p, getattr(r, "owner", None), email)]
     if detail:
         return {"agents": [r.model_dump(mode="json", exclude_none=True) for r in items]}
     return {"agents": [_summary(r) for r in items]}
@@ -294,9 +294,9 @@ async def list_runs(
     stream = bus.stream_key(settings.runs_stream_id)
     # Multi-tenancy: non-admins only see runs of records they own (matched by agent_uid or
     # record_uid against their owned graph records).
-    p = principal(request)
-    owned = None if is_admin(p) else {
-        r.uid for r in _graph_registry(request).all() if can_access(p, r.owner)
+    p, email = principal(request), principal_email(request)
+    owned = None if is_admin(p, email) else {
+        r.uid for r in _graph_registry(request).all() if can_access(p, r.owner, email)
     }
     # Read a generous window forward, then keep the newest `limit` (after filtering).
     _, envelopes = await bus.observe(stream, "0", count=max(limit * 5, 200))
@@ -331,7 +331,7 @@ async def consistency(request: Request) -> dict:
     Joined server-side (agent_runtime → scheduler over logus2k_network) to avoid CORS;
     read-only toward the scheduler. If the scheduler is unreachable, jobs come back empty
     and only the agent list is returned (degraded, flagged)."""
-    if not is_admin(principal(request)):
+    if not is_admin(principal(request), principal_email(request)):
         raise HTTPException(status_code=403, detail="admin only (superuser)")  # operational, cross-tenant
     reg = _registry(request)
     agents = reg.all()
@@ -606,7 +606,7 @@ async def deploy(uid: str, req: DeployReq, request: Request) -> dict:
     greg = _graph_registry(request)
     existing = greg.get(uid)
     p = principal(request)
-    if existing is not None and not can_access(p, existing.owner):
+    if existing is not None and not can_access(p, existing.owner, principal_email(request)):
         raise HTTPException(status_code=403, detail="not authorized for this project")
     owner = existing.owner if (existing and existing.owner) else p
     owner_email = (existing.owner_email if (existing and existing.owner_email)
@@ -748,7 +748,7 @@ async def delete_project(uid: str, request: Request) -> dict:
 async def list_projects(request: Request) -> dict:
     """The deployed Project graph records the caller owns (admins see all)."""
     reg = _graph_registry(request)
-    p = principal(request)
+    p, email = principal(request), principal_email(request)
     return {
         "projects": [
             {
@@ -761,7 +761,7 @@ async def list_projects(request: Request) -> dict:
                 "entry": r.entry,
             }
             for r in reg.all()
-            if can_access(p, r.owner)
+            if can_access(p, r.owner, email)
         ]
     }
 
@@ -808,7 +808,7 @@ async def project_status(uid: str, req: StatusReq, request: Request) -> dict:
 
     p = principal(request)
     rec = _graph_registry(request).get(uid)
-    visible = rec is not None and can_access(p, rec.owner)
+    visible = rec is not None and can_access(p, rec.owner, principal_email(request))
     result: dict[str, Any] = {
         "deployed": bool(visible),
         "deployed_version": rec.version if visible else None,

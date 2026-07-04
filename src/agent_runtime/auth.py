@@ -37,8 +37,10 @@ def principal(request: Request) -> str:
         if token and request.headers.get(INTERNAL_HEADER) != token:
             return settings.default_principal
         return header_user
-    # Direct-to-farm callers behind the edge proxy (e.g. the admin frontend, which does NOT
-    # go through serve.py) carry the proxy's verified identity instead of X-Patron-User.
+    # Direct-to-farm callers behind the edge proxy (e.g. the admin frontend, which does NOT go
+    # through serve.py) carry the proxy's verified identity instead of X-Patron-User. The
+    # PRINCIPAL is the immutable OIDC ``sub`` (``X-Auth-Request-User``); the email is display
+    # only (and the admin-match key — see is_admin). sub → email → default is the precedence.
     proxy_user = (request.headers.get("X-Auth-Request-User")
                   or request.headers.get("X-Auth-Request-Email"))
     if proxy_user:
@@ -47,11 +49,18 @@ def principal(request: Request) -> str:
 
 
 def principal_email(request: Request) -> Optional[str]:
-    return request.headers.get(EMAIL_HEADER)
+    """The caller's email (X-Patron-Email from serve.py, or the proxy header on direct access).
+    NOT the identity key — stored as ``owner_email`` for display and used to match admins."""
+    return request.headers.get(EMAIL_HEADER) or request.headers.get("X-Auth-Request-Email")
 
 
-def is_admin(p: str) -> bool:
-    return p in settings.admin_principal_set()
+def is_admin(p: str, email: Optional[str] = None) -> bool:
+    """Admin membership is matched by EITHER the principal (sub) OR the email. ``ADMIN_PRINCIPALS``
+    stays configured as human-readable EMAILS, so the sole admin keeps access even though the
+    live principal is an opaque ``sub`` (and even before any owner backfill). A sub may also be
+    listed directly if desired."""
+    admins = settings.admin_principal_set()
+    return p in admins or (email is not None and email in admins)
 
 
 def effective_owner(owner: Optional[str]) -> str:
@@ -59,13 +68,13 @@ def effective_owner(owner: Optional[str]) -> str:
     return owner or settings.default_principal
 
 
-def can_access(p: str, owner: Optional[str]) -> bool:
-    return is_admin(p) or p == effective_owner(owner)
+def can_access(p: str, owner: Optional[str], email: Optional[str] = None) -> bool:
+    return is_admin(p, email) or p == effective_owner(owner)
 
 
 def require_access(request: Request, owner: Optional[str]) -> str:
     """Authorize the caller for a resource owned by ``owner``; return the principal or 403."""
     p = principal(request)
-    if not can_access(p, owner):
+    if not can_access(p, owner, principal_email(request)):
         raise HTTPException(status_code=403, detail="not authorized for this resource")
     return p

@@ -28,7 +28,7 @@
               "max_tokens": 16384
             }
           },
-          "description": "Morning AI headlines (NewsAPI) → L2K Chat",
+          "description": "Morning AI headlines (NewsAPI) \u2192 L2K Chat",
           "enabled": true,
           "tools": {
             "server": "mcp",
@@ -80,5 +80,7 @@
       "dst": "whatsapp:3",
       "port": "out"
     }
-  ]
+  ],
+  "owner": "103189083840167031872",
+  "owner_email": "logus2k@gmail.com"
 }
