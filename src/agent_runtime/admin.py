@@ -43,6 +43,7 @@ from agent_bus_client import fired_event
 
 from .auth import can_access, is_admin, principal, principal_email, require_access
 from .config import settings
+from .debug import registry as debug_registry
 from .events import hub
 from .deploy import IngressClient, SchedulerClient, deploy_project, undeploy_project
 from .dsl import AgentRecord
@@ -653,15 +654,19 @@ async def undeploy(uid: str, request: Request) -> dict:
 
 class _FireBody(BaseModel):
     task: str = ""
+    debug: bool = False   # run in step-by-step debug mode (pauses before each node)
 
 
 @router.post("/projects/{uid}/fire")
 async def fire_project(uid: str, body: _FireBody, request: Request) -> dict:
-    """Manually FIRE a deployed Project — the Console block's Send button. Publishes a
-    ``console.fired`` event ``{record_uid, task}`` to the farm stream; the farm routes it by
-    ``record_uid`` (project isolation) and dispatches it as its own bounded task with a fresh
-    ``cid`` (run isolation), running the deployed graph with ``task`` as the seed. Same firing
-    contract as the file/web/schedule initiators — triggered by a button, not an event."""
+    """Manually FIRE a deployed Project — the Console block's Send button (and the Trace panel's
+    "Fire (debug)"). Publishes a ``console.fired`` event ``{record_uid, task}`` to the farm stream;
+    the farm routes it by ``record_uid`` (project isolation) and dispatches it as its own bounded
+    task with a fresh ``cid`` (run isolation), running the deployed graph with ``task`` as the seed.
+    Same firing contract as the file/web/schedule initiators — triggered by a button, not an event.
+
+    When ``debug`` is true, the run pauses before each node (documents/debug_specification.md); the
+    returned ``cid`` is then used to drive ``/step`` · ``/continue`` · ``/stop``."""
     rec = _graph_registry(request).get(uid)
     if rec is None:
         raise HTTPException(status_code=404, detail=f"no deployed record '{uid}' — deploy it first")
@@ -678,9 +683,64 @@ async def fire_project(uid: str, body: _FireBody, request: Request) -> dict:
         source="console",
         cid=cid,
     )
+    if body.debug:
+        # The SDK's fired_event hardcodes data={record_uid, task}; carry the debug flag on the
+        # envelope's payload.data (survives the bus round-trip → read by runner.run_graph_record).
+        env.payload.data["debug"] = True
     entry_id = await bus.publish(settings.farm_stream_key(), env)
-    log.info("manual fire (console) uid=%s cid=%s entry=%s task=%r", uid, cid, entry_id, body.task[:120])
-    return {"ok": True, "uid": uid, "cid": cid, "entry": entry_id}
+    log.info("manual fire (console) uid=%s cid=%s debug=%s entry=%s task=%r",
+             uid, cid, body.debug, entry_id, body.task[:120])
+    return {"ok": True, "uid": uid, "cid": cid, "entry": entry_id, "debug": body.debug}
+
+
+class _DebugBody(BaseModel):
+    cid: str
+
+
+def _debug_session_for(uid: str, cid: str, request: Request):
+    """Resolve + owner-gate a debug session for control endpoints. 404 if the record or session
+    is gone, 403 if the caller isn't the record owner, 409 if the cid belongs to another project."""
+    rec = _graph_registry(request).get(uid)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"no deployed record '{uid}'")
+    require_access(request, rec.owner)  # only the owner may drive their run
+    session = debug_registry.get(cid)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"no active debug session for cid '{cid}'")
+    if session.uid != uid:
+        raise HTTPException(status_code=409, detail="cid belongs to a different project")
+    return session
+
+
+@router.post("/projects/{uid}/step")
+async def debug_step(uid: str, body: _DebugBody, request: Request) -> dict:
+    """Advance a paused debug run by exactly one node (documents/debug_specification.md)."""
+    session = _debug_session_for(uid, body.cid, request)
+    session.step()
+    return {"ok": True, **session.state()}
+
+
+@router.post("/projects/{uid}/continue")
+async def debug_continue(uid: str, body: _DebugBody, request: Request) -> dict:
+    """Release a paused debug run to finish normally (stop pausing)."""
+    session = _debug_session_for(uid, body.cid, request)
+    session.cont()
+    return {"ok": True, **session.state()}
+
+
+@router.post("/projects/{uid}/stop")
+async def debug_stop(uid: str, body: _DebugBody, request: Request) -> dict:
+    """Abort a paused debug run at the next gate (clean stop)."""
+    session = _debug_session_for(uid, body.cid, request)
+    session.stop()
+    return {"ok": True, **session.state()}
+
+
+@router.get("/projects/{uid}/debug")
+async def debug_state(uid: str, request: Request, cid: str) -> dict:
+    """Current state of a debug session (for a UI that reconnects mid-run)."""
+    session = _debug_session_for(uid, cid, request)
+    return {"ok": True, "active": True, **session.state()}
 
 
 @router.get("/projects/{uid}/events")

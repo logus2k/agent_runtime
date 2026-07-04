@@ -27,6 +27,7 @@ from agent_bus_client import EventEnvelope
 from agent_bus_client.bus import BusClient, Delivery, make_consumer
 
 from .config import Settings
+from .debug import registry as debug_registry
 from .graph_registry import GraphRegistry
 from .registry import Registry
 
@@ -208,6 +209,13 @@ class Farm:
                         self._spawn(d)
                     if cursor == "0-0" or not claimed:
                         break
+                # Debug: auto-stop sessions a user abandoned while paused (idle > timeout), so a
+                # forgotten paused run can't hold a task forever (documents/debug_specification.md §4.6).
+                for sess in debug_registry.all():
+                    if sess.mode == "step" and sess.idle_seconds > s.debug_idle_timeout_s:
+                        log.warning("debug session cid=%s idle %.0fs — auto-stopping",
+                                    sess.cid, sess.idle_seconds)
+                        sess.stop()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - reaper must survive, loudly
@@ -286,9 +294,15 @@ class Farm:
                         "running project '%s' (%s) (cid=%s sid=%s)",
                         graph_record.name, graph_record.uid, cid, sid,
                     )
-                    await asyncio.wait_for(
-                        self._graph_handler(graph_record, env), timeout=s.job_timeout_s
-                    )
+                    if data.get("debug"):
+                        # A debug run pauses between nodes indefinitely — the bounded job
+                        # timeout would kill it. The DebugSession's idle reaper bounds it
+                        # instead (documents/debug_specification.md §4.6).
+                        await self._graph_handler(graph_record, env)
+                    else:
+                        await asyncio.wait_for(
+                            self._graph_handler(graph_record, env), timeout=s.job_timeout_s
+                        )
                     log.info("project '%s' completed (cid=%s)", graph_record.name, cid)
                 return  # ack in finally
 

@@ -36,6 +36,7 @@ from .composer.ir import IREdge, IRGraph, IRNode
 from .config import Settings
 from .dsl import AgentRecord, Brain, Delivery, Guardrails, Judge, Rag
 from .dsl_graph import GraphNode, GraphRecord, from_flat_record
+from .debug import DebugStopped, registry as debug_registry
 from .graph_executor import GraphWorkflowExecutor, WalkContext
 from .nodes.brain import run_brain
 from .nodes.delivery import deliver, deliver_file, deliver_web
@@ -303,6 +304,13 @@ class Runner:
         overrides = (env.payload.data or {}).get("vars") or {}
         # Read the workflow seed per the *.fired contract (record_uid routes; task seeds).
         _record_uid, initial_task = seed_of(env)
+        # Step-by-step debugging (documents/debug_specification.md): a run fired with
+        # ``debug: true`` gets a DebugSession keyed by cid — the executor pauses before each node.
+        debug_flag = bool((env.payload.data or {}).get("debug"))
+        debug_session = (
+            debug_registry.create(cid, record.uid, getattr(record, "owner", None))
+            if debug_flag else None
+        )
 
         async def emit_for(node_record: AgentRecord | None, event_type: str, data: dict) -> None:
             lbl = (
@@ -507,6 +515,14 @@ class Runner:
             await emit_for(None, "edge.traversed",
                            {"src": src, "dst": dst, "port": port, "payload": _preview(value)})
 
+        async def on_pause(event_type: str, data: dict) -> None:
+            # Debug pause point: the executor is about to run ``data['node']``; surface it (with a
+            # capped preview of the incoming payload) to the Trace panel over the SAME SSE path.
+            d = dict(data)
+            if "incoming" in d:
+                d["incoming"] = _preview(d["incoming"])
+            await emit_for(None, event_type, d)
+
         handlers = {
             "initiator": h_initiator,
             "rag": h_rag,
@@ -531,14 +547,22 @@ class Runner:
                 data_out[n.id] = await h_data(n, None, walk_ctx)
             if not record.in_edges(n.id):
                 source_seeds.append(n.id)
-        await GraphWorkflowExecutor(handlers, on_trace=on_trace).run(
-            record, None, walk_ctx, extra_seeds=source_seeds
-        )
-        # edge.traversed is now emitted LIVE per edge inside on_trace (with payload).
+        try:
+            await GraphWorkflowExecutor(
+                handlers, on_trace=on_trace, debug=debug_session, on_pause=on_pause,
+            ).run(record, None, walk_ctx, extra_seeds=source_seeds)
+            # edge.traversed is now emitted LIVE per edge inside on_trace (with payload).
+            reason = "done"
+        except DebugStopped:
+            # A debug run was stopped by the user — a clean abort, not an error.
+            reason = "debug-stopped"
+        finally:
+            if debug_session is not None:
+                debug_registry.remove(cid)
 
         await self._emit(
             cid, "workflow.terminated",
-            {"record_uid": record.uid, "reason": "done",
+            {"record_uid": record.uid, "reason": reason,
              "turns": walk_ctx.scratch.get("turns_used", 0),
              "agent_uid": record.uid, "agent_name": record.name},
         )

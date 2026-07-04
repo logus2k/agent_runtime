@@ -22,9 +22,12 @@ from __future__ import annotations
 import logging
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from .dsl_graph import GraphNode, GraphRecord
+
+if TYPE_CHECKING:
+    from .debug import DebugSession, PauseEmit
 
 log = logging.getLogger("agent_runtime.graph_executor")
 
@@ -62,10 +65,17 @@ class GraphWorkflowExecutor:
         *,
         max_steps: int = 1000,
         on_trace: Optional[TraceHook] = None,
+        debug: Optional["DebugSession"] = None,
+        on_pause: Optional["PauseEmit"] = None,
     ) -> None:
         self._handlers = dict(handlers)
         self._max_steps = max_steps
         self._on_trace = on_trace
+        # Step-by-step debugging (documents/debug_specification.md). When ``debug`` is a
+        # DebugSession, the walk pauses at ``session.gate(...)`` before running each node.
+        # None (the default) → no gate is ever awaited: non-debug runs are unchanged.
+        self._debug = debug
+        self._on_pause = on_pause
 
     async def run(
         self, record: GraphRecord, initial: Any, ctx: Optional[WalkContext] = None,
@@ -104,6 +114,11 @@ class GraphWorkflowExecutor:
                     f"no handler for node kind '{node.kind}' (node '{node.id}'); "
                     f"known: {sorted(self._handlers)}"
                 )
+
+            # Debug pause-gate: BEFORE running the node, block until the user steps/continues
+            # (or raise DebugStopped on stop). Inert when not debugging (self._debug is None).
+            if self._debug is not None:
+                await self._debug.gate(node.id, node.kind, msg.value, self._on_pause)
 
             # Run this node ONCE for THIS incoming message (per-message fan-in: no
             # barrier — a node with two incoming edges is visited twice and runs twice).

@@ -70,6 +70,8 @@ class Settings:
     # --- Dispatch bounds (never oversubscribe the shared brain) ---
     max_concurrency: int = _int("MAX_CONCURRENCY", 4)  # ~ agent_server slot count
     job_timeout_s: int = _int("JOB_TIMEOUT_S", 120)
+    # Step-by-step debug: auto-stop a paused run abandoned this long (documents/debug_specification.md).
+    debug_idle_timeout_s: int = _int("DEBUG_IDLE_TIMEOUT_S", 300)
 
     # --- Idempotency (at-least-once delivery → dedupe on cid+sid) ---
     dedupe_ttl_s: int = _int("DEDUPE_TTL_S", 3600)
