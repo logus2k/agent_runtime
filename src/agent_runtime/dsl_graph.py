@@ -94,6 +94,10 @@ class GraphRecord(_Strict):
     name: str
     description: Optional[str] = None
     enabled: bool = True
+    # Multi-tenancy (documents/multi_tenancy.md §4): the owning principal (OIDC sub),
+    # stamped at deploy. None = legacy record → treated as owned by the default principal.
+    owner: Optional[str] = None
+    owner_email: Optional[str] = None
     entry: Optional[str] = None
     nodes: list[GraphNode]
     edges: list[GraphEdge] = Field(default_factory=list)

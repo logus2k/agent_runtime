@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from agent_bus_client import fired_event
 
+from .auth import can_access, is_admin, principal, principal_email, require_access
 from .config import settings
 from .events import hub
 from .deploy import IngressClient, SchedulerClient, deploy_project, undeploy_project
@@ -159,9 +160,11 @@ def _persist_and_upsert(request: Request, record: AgentRecord) -> Path:
 @router.get("/agents")
 async def list_agents(request: Request, detail: int = 0) -> dict:
     reg = _registry(request)
+    p = principal(request)
+    items = [r for r in reg.all() if can_access(p, getattr(r, "owner", None))]
     if detail:
-        return {"agents": [r.model_dump(mode="json", exclude_none=True) for r in reg.all()]}
-    return {"agents": [_summary(r) for r in reg.all()]}
+        return {"agents": [r.model_dump(mode="json", exclude_none=True) for r in items]}
+    return {"agents": [_summary(r) for r in items]}
 
 
 @router.get("/agents/{uid}")
@@ -169,6 +172,7 @@ async def get_agent(uid: str, request: Request) -> dict:
     rec = _registry(request).get(uid)
     if rec is None:
         raise HTTPException(status_code=404, detail=f"no agent '{uid}'")
+    require_access(request, getattr(rec, "owner", None))
     return rec.model_dump(mode="json", exclude_none=True)
 
 
@@ -288,12 +292,20 @@ async def list_runs(
     agent_uid. Read-only XREAD replay — bounded scan, fine at this volume."""
     bus = _bus(request)
     stream = bus.stream_key(settings.runs_stream_id)
+    # Multi-tenancy: non-admins only see runs of records they own (matched by agent_uid or
+    # record_uid against their owned graph records).
+    p = principal(request)
+    owned = None if is_admin(p) else {
+        r.uid for r in _graph_registry(request).all() if can_access(p, r.owner)
+    }
     # Read a generous window forward, then keep the newest `limit` (after filtering).
     _, envelopes = await bus.observe(stream, "0", count=max(limit * 5, 200))
     events: list[dict] = []
     for env in envelopes:
         d = env.payload.data or {}
         if agent_uid and d.get("agent_uid") != agent_uid:
+            continue
+        if owned is not None and d.get("agent_uid") not in owned and d.get("record_uid") not in owned:
             continue
         events.append({
             "cid": env.header.cid,
@@ -319,6 +331,8 @@ async def consistency(request: Request) -> dict:
     Joined server-side (agent_runtime → scheduler over logus2k_network) to avoid CORS;
     read-only toward the scheduler. If the scheduler is unreachable, jobs come back empty
     and only the agent list is returned (degraded, flagged)."""
+    if not is_admin(principal(request)):
+        raise HTTPException(status_code=403, detail="admin only (superuser)")  # operational, cross-tenant
     reg = _registry(request)
     agents = reg.all()
 
@@ -587,14 +601,26 @@ async def deploy(uid: str, req: DeployReq, request: Request) -> dict:
 
     if not req.name or not req.name.strip():
         raise HTTPException(status_code=422, detail="project name is required")
+    # Multi-tenancy: a re-deploy must be by the owner (or admin); a new uid → the caller
+    # becomes the owner. The existing owner is preserved across re-deploys.
+    greg = _graph_registry(request)
+    existing = greg.get(uid)
+    p = principal(request)
+    if existing is not None and not can_access(p, existing.owner):
+        raise HTTPException(status_code=403, detail="not authorized for this project")
+    owner = existing.owner if (existing and existing.owner) else p
+    owner_email = (existing.owner_email if (existing and existing.owner_email)
+                   else principal_email(request))
     try:
         result = await deploy_project(
             uid=uid,
             name=req.name,
             composition=req.composition,
-            registry=_graph_registry(request),
+            registry=greg,
             scheduler=_scheduler_client(request),
             ingress=_ingress_client(request),
+            owner=owner,
+            owner_email=owner_email,
         )
     except LoweringError as exc:
         # Nothing to deploy at all (empty/blockless composition). This is not advisory —
@@ -612,9 +638,13 @@ async def undeploy(uid: str, request: Request) -> dict:
     """Undeploy a Project (§9.4): remove the live ``GraphRecord`` and its firing binding.
     Source assets stay intact. Idempotent — a missing record is reported, not an error.
     Returns ``{ok, uid, removed, firing_removed, warnings[]}``."""
+    greg = _graph_registry(request)
+    rec = greg.get(uid)
+    if rec is not None:
+        require_access(request, rec.owner)
     result = await undeploy_project(
         uid=uid,
-        registry=_graph_registry(request),
+        registry=greg,
         scheduler=_scheduler_client(request),
         ingress=_ingress_client(request),
     )
@@ -635,6 +665,7 @@ async def fire_project(uid: str, body: _FireBody, request: Request) -> dict:
     rec = _graph_registry(request).get(uid)
     if rec is None:
         raise HTTPException(status_code=404, detail=f"no deployed record '{uid}' — deploy it first")
+    require_access(request, rec.owner)
     if not getattr(rec, "enabled", True):
         raise HTTPException(status_code=409, detail=f"record '{uid}' is disabled")
     bus = _bus(request)
@@ -658,6 +689,10 @@ async def project_events(uid: str, request: Request) -> StreamingResponse:
     content that reaches its Console (Receive) block). Push-based (no polling) — subscribes an
     in-process hub queue per connection, filters to this ``record_uid``, and emits one SSE
     ``data:`` frame per output. A keepalive comment every 15s holds the connection open."""
+    rec = _graph_registry(request).get(uid)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"no deployed record '{uid}'")
+    require_access(request, rec.owner)  # multi-tenancy: only the owner may observe the trace
     q = hub.subscribe()
 
     async def gen():
@@ -692,9 +727,13 @@ async def delete_project(uid: str, request: Request) -> dict:
     cross-project-usage confirmation) is Patron's responsibility — the source assets are
     reusable and self-ignorant, so the runtime side only tears down the live glue. Returns
     the same shape as undeploy."""
+    greg = _graph_registry(request)
+    rec = greg.get(uid)
+    if rec is not None:
+        require_access(request, rec.owner)
     result = await undeploy_project(
         uid=uid,
-        registry=_graph_registry(request),
+        registry=greg,
         scheduler=_scheduler_client(request),
         ingress=_ingress_client(request),
     )
@@ -703,8 +742,9 @@ async def delete_project(uid: str, request: Request) -> dict:
 
 @router.get("/projects")
 async def list_projects(request: Request) -> dict:
-    """The deployed Project graph records (uid, name, version, node/edge counts)."""
+    """The deployed Project graph records the caller owns (admins see all)."""
     reg = _graph_registry(request)
+    p = principal(request)
     return {
         "projects": [
             {
@@ -717,14 +757,16 @@ async def list_projects(request: Request) -> dict:
                 "entry": r.entry,
             }
             for r in reg.all()
+            if can_access(p, r.owner)
         ]
     }
 
 
 @router.get("/projects/{uid}")
 async def get_project(uid: str, request: Request) -> dict:
-    """The deployed graph record for a Project uid (404 if not deployed)."""
+    """The deployed graph record for a Project uid (404 if not deployed, 403 if not owner)."""
     rec = _graph_registry(request).get(uid)
     if rec is None:
         raise HTTPException(status_code=404, detail=f"no deployed project '{uid}'")
+    require_access(request, rec.owner)
     return rec.model_dump(mode="json", exclude_none=True)

@@ -343,16 +343,21 @@ async def deploy_project(
     scheduler: SchedulerClient,
     ingress: Optional["IngressClient"] = None,
     farm_stream_id: Optional[str] = None,
+    owner: Optional[str] = None,
+    owner_email: Optional[str] = None,
 ) -> dict[str, Any]:
     """Deploy a Project: lower → upsert one GraphRecord (idempotent, version-bumped) →
     establish the firing binding for whichever initiator the composition has:
       * schedule Trigger  -> agent_scheduler Schedule + Binding (§9.3.1);
       * File/Web/STT       -> the matching ingress service's /bindings (record_uid).
 
-    Returns ``{uid, version, warnings, firing}``. ``warnings`` is the advisory validation
-    list (never blocks). ``firing`` describes the binding outcome (or why none was made). A
-    binding error is appended to ``warnings`` and does NOT undo the stored graph record."""
+    ``owner`` (multi-tenancy §4) is stamped on the record; the caller preserves the existing
+    owner on re-deploy. Returns ``{uid, version, warnings, firing}``. ``warnings`` is the
+    advisory validation list (never blocks). ``firing`` describes the binding outcome (or why
+    none was made). A binding error is appended to ``warnings`` and does NOT undo the record."""
     record, warnings = lower_project(uid, name, composition)
+    if owner is not None:
+        record = record.model_copy(update={"owner": owner, "owner_email": owner_email})
     stored: GraphRecord = registry.upsert(record)  # idempotent; bumps version on re-deploy
 
     firing: dict[str, Any] = {"bound": False, "reason": None}

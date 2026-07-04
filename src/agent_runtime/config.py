@@ -147,8 +147,24 @@ class Settings:
     api_host: str = _str("API_HOST", "0.0.0.0")
     api_port: int = _int("API_PORT", 6817)
 
+    # --- Multi-tenancy (documents/multi_tenancy.md) ---
+    # The principal used when no authenticated identity is present on an admin request
+    # (dev / direct access / legacy records with no owner). In production the edge proxy
+    # supplies the real principal via serve.py; this is the single-user fallback.
+    default_principal: str = _str("DEFAULT_PRINCIPAL", "logus2k@gmail.com")
+    # Comma-separated principals that bypass ownership (superusers, §9.4) — see all, hit
+    # operational endpoints (/admin/consistency).
+    admin_principals: str = _str("ADMIN_PRINCIPALS", "logus2k@gmail.com")
+    # Optional shared secret: when set, the farm trusts the X-Patron-User identity header
+    # ONLY if the request also carries X-Internal-Auth == this value (serve.py sends it).
+    # Empty (dev) = trust the header / fall back to default_principal.
+    internal_auth_token: str = _str("INTERNAL_AUTH_TOKEN", "")
+
     # --- Logging ---
     log_level: str = _str("LOG_LEVEL", "INFO")
+
+    def admin_principal_set(self) -> set[str]:
+        return {p.strip() for p in self.admin_principals.split(",") if p.strip()}
 
     def farm_stream_key(self) -> str:
         """The full key of the farm's ingress stream: ``stream:<farm_stream_id>``."""
