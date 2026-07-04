@@ -61,6 +61,9 @@ class Graph:
         # link = [id, origin_id, origin_slot, target_id, target_slot, type]
         return [lk for lk in self.links if len(lk) >= 4 and lk[1] == node_id]
 
+    def _in_links(self, node_id: Any) -> list[list[Any]]:
+        return [lk for lk in self.links if len(lk) >= 4 and lk[3] == node_id]
+
     def _node(self, node_id: Any) -> Optional[dict[str, Any]]:
         return self._by_id.get(node_id)
 
@@ -474,7 +477,12 @@ class ProjectLowering:
                 continue
             if Graph._in_slot_label(dst, lk[4]) != "vars":
                 continue
-            content = _as_obj(Graph._props(src).get("content"))
+            # Only INLINE data folds at compile time; a file-source (or fed) Data block is a
+            # runtime source — leave it in the graph for the executor + runtime vars merge.
+            sprops = Graph._props(src)
+            if str(sprops.get("source") or "inline") == "file" or g._in_links(src.get("id")):
+                continue
+            content = _as_obj(sprops.get("content"))
             if content:
                 props = dst.setdefault("properties", {})
                 props["input_vars"] = {**_as_obj(props.get("input_vars")), **content}
@@ -555,7 +563,9 @@ class ProjectLowering:
             # drop their edges — warned, never crash).
             if src in known_kind_ids and dst in known_kind_ids:
                 port = self._graph._out_slot_label(self._graph._node(lk[1]), lk[2])
-                edges.append(GraphEdge(src=src, dst=dst, port=port))
+                dst_port = Graph._in_slot_label(self._graph._node(lk[3]),
+                                                lk[4] if len(lk) > 4 else 0)
+                edges.append(GraphEdge(src=src, dst=dst, port=port, dst_port=dst_port))
 
         # Decompose agent-embedded capabilities into their graph nodes (§8.1): an Agent
         # carrying RAG-pre and/or Guardrails config becomes  …→[rag]→agent→[guardrail]→…

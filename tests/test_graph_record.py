@@ -292,6 +292,68 @@ async def test_executor_diamond_fanin_no_barrier_runs_twice():
     assert sorted(dest_inputs) == ["ans(b1:SEED)", "ans(b2:SEED)"]
 
 
+async def test_executor_vars_edge_is_a_pull_not_a_trigger():
+    # init -> agent -> dest, plus data --vars--> agent.  The `vars` edge must NOT enqueue a
+    # run of the agent (a PULL input): the agent runs exactly ONCE (from init), and the data
+    # node is seeded as an indegree-0 source but does not fan a message into the agent.
+    g = GraphRecord(
+        version="0.1", uid="pull", name="pull",
+        nodes=[
+            GraphNode(id="init", kind="initiator"),
+            GraphNode(id="data", kind="data", config={"content": {"n": 1}}),
+            GraphNode(id="agent", kind="agent", config={"record": {}}),
+            GraphNode(id="dest", kind="destination", config={"channel": "bus", "target": "x"}),
+        ],
+        edges=[
+            GraphEdge(src="init", dst="agent"),
+            GraphEdge(src="agent", dst="dest"),
+            GraphEdge(src="data", dst="agent", dst_port="vars"),
+        ],
+        entry="init",
+    )
+    pulled = []
+
+    async def h(node, value, ctx):
+        if node.kind == "data":
+            return node.config.get("content")
+        if node.kind == "agent":
+            pulled.append([e.src for e in g.in_edges(node.id, dst_port="vars")])
+        return value
+
+    handlers = {k: h for k in ("initiator", "data", "agent", "destination")}
+    ctx = await GraphWorkflowExecutor(handlers).run(g, None, extra_seeds=["data"])
+    assert ctx.scratch["run_counts"]["agent"] == 1  # NOT triggered by the vars edge
+    assert ctx.scratch["run_counts"]["data"] == 1   # ran once (seeded source)
+    assert pulled == [["data"]]                      # agent can read its vars source
+
+
+async def test_executor_seeded_data_source_fans_out_to_a_normal_successor():
+    # data --in--> dest, with data an indegree-0 source seeded via extra_seeds. Its output
+    # must reach the destination (general runtime flow-source path).
+    g = GraphRecord(
+        version="0.1", uid="src", name="src",
+        nodes=[
+            GraphNode(id="init", kind="initiator"),
+            GraphNode(id="data", kind="data", config={"content": {"k": "v"}}),
+            GraphNode(id="dest", kind="destination", config={"channel": "bus", "target": "x"}),
+        ],
+        edges=[GraphEdge(src="data", dst="dest")],
+        entry="init",
+    )
+    delivered = []
+
+    async def h(node, value, ctx):
+        if node.kind == "data":
+            return node.config.get("content")
+        if node.kind == "destination":
+            delivered.append(value)
+        return value
+
+    handlers = {k: h for k in ("initiator", "data", "destination")}
+    await GraphWorkflowExecutor(handlers).run(g, None, extra_seeds=["data"])
+    assert delivered == [{"k": "v"}]
+
+
 async def test_executor_unknown_kind_is_loud():
     g = GraphRecord(
         version="0.1", uid="u", name="w",

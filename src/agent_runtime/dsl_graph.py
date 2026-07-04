@@ -75,11 +75,15 @@ class GraphNode(_Strict):
 
 class GraphEdge(_Strict):
     """A typed directed edge (the glue). ``port`` is the source out-port label —
-    ``"out"`` for a plain flow, a branch/loop label otherwise."""
+    ``"out"`` for a plain flow, a branch/loop label otherwise. ``dst_port`` is the
+    DESTINATION in-port label — ``"in"`` for the task flow, ``"vars"`` for an Agent's
+    variables channel (a JSON/Data block wires here); the executor treats a ``vars`` edge
+    as a PULL input (merged when the node runs) rather than a triggering message."""
 
     src: str
     dst: str
     port: str = "out"
+    dst_port: str = "in"
 
 
 class GraphRecord(_Strict):
@@ -166,6 +170,12 @@ class GraphRecord(_Strict):
         return [
             e for e in self.edges
             if e.src == node_id and (port is None or e.port == port)
+        ]
+
+    def in_edges(self, node_id: str, dst_port: Optional[str] = None) -> list[GraphEdge]:
+        return [
+            e for e in self.edges
+            if e.dst == node_id and (dst_port is None or e.dst_port == dst_port)
         ]
 
     def successors(self, node_id: str, port: Optional[str] = None) -> list[str]:

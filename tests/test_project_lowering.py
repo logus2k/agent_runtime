@@ -104,6 +104,35 @@ def test_data_block_wired_to_a_normal_in_stays_as_a_flow_node():
     assert "data" in {n.kind for n in rec.nodes}  # kept — it's on the flow path, not folded
 
 
+def test_file_source_data_on_vars_port_stays_as_a_node_with_a_vars_edge():
+    """A FILE-source Data block wired to an Agent's `vars` port is NOT folded (its content is
+    only known at runtime) — it stays as a `data` node, and the edge into the agent is tagged
+    dst_port='vars' so the executor treats it as a PULL input (not a triggering message)."""
+    comp = {
+        "nodes": [
+            _trigger(),
+            {"id": 2, "type": "agent", "properties": {"persona": "p"},
+             "inputs": [{"name": "in", "link": 1}, {"name": "vars", "link": 3}],
+             "outputs": [{"name": "out", "links": [2]}]},
+            {"id": 3, "type": "bus", "properties": {"target": "b"},
+             "inputs": [{"name": "in", "link": 2}]},
+            {"id": 4, "type": "data",
+             "properties": {"source": "file", "path": "/watched/in/params.json"},
+             "outputs": [{"name": "out", "links": [3]}]},
+        ],
+        "links": [[1, 1, 0, 2, 0, "string"],
+                  [2, 2, 0, 3, 0, "string"],
+                  [3, 4, 0, 2, 1, "any"]],  # data(4).out -> agent(2).vars (input slot 1)
+    }
+    rec, _ = lower_project("u", "D", comp)
+    assert "data" in {n.kind for n in rec.nodes}  # NOT folded (file source, runtime pull)
+    data = next(n for n in rec.nodes if n.kind == "data")
+    agent = next(n for n in rec.nodes if n.kind == "agent")
+    vars_edges = rec.in_edges(agent.id, dst_port="vars")
+    assert [e.src for e in vars_edges] == [data.id]
+    assert data.config == {"source": "file", "path": "/watched/in/params.json"}
+
+
 def test_agent_with_rag_pre_decomposes_into_a_rag_node_before_the_agent():
     """An Agent carrying RAG-pre config (rag_domains) must lower to a `rag` node wired
     BEFORE the agent (initiator→rag→agent→dest), so the executor's h_rag runs it. §8.1."""

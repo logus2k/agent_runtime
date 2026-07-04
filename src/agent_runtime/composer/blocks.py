@@ -712,7 +712,7 @@ class DataJson(Block):
 
     kind = "data"
     category = "Block"
-    label = "Data (JSON)"
+    label = "JSON"
 
     def get_schema(self) -> BlockSchema:
         return BlockSchema(
@@ -721,15 +721,23 @@ class DataJson(Block):
             label=self.label,
             ports=[Port("out", "out", ANY)],
             config=[
+                ConfigField("source", "enum", values=["inline", "file"], default="inline",
+                            control="select", label="source"),
                 ConfigField("content", "json", control="json", label="JSON content",
-                            placeholder='{ "topic": "AI agents", "n": 5 }'),
+                            placeholder='{ "topic": "AI agents", "n": 5 }'),  # source=inline
+                ConfigField("path", "string", control="text", label="file path",
+                            placeholder="/watched/in/params.json"),           # source=file (runtime fs)
             ],
         )
 
     def validate(self) -> list[str]:
         errors = super().validate()
-        # content must parse to a JSON OBJECT (mirrors the Agent's input_vars rule).
-        if self.cfg("content") not in (None, ""):
+        source = str(self.cfg("source") or "inline")
+        if source == "file":
+            if not str(self.cfg("path") or "").strip():
+                errors.append(f"{self.label}: file path is required when source=file")
+        elif self.cfg("content") not in (None, ""):
+            # inline content must parse to a JSON OBJECT (mirrors the Agent's input_vars rule).
             try:
                 _json_obj(self.cfg("content"), where=f"{self.label} content")
             except ValueError as exc:
@@ -737,7 +745,13 @@ class DataJson(Block):
         return errors
 
     def lower(self) -> dict[str, Any]:
-        return {"content": _json_obj(self.cfg("content"), where=f"{self.label} content")}
+        source = str(self.cfg("source") or "inline")
+        frag: dict[str, Any] = {"source": source}
+        if source == "file":
+            frag["path"] = str(self.cfg("path") or "").strip()
+        else:
+            frag["content"] = _json_obj(self.cfg("content"), where=f"{self.label} content")
+        return frag
 
 
 # --------------------------------------------------------------------------- #

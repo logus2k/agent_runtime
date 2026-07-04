@@ -21,7 +21,9 @@ message.
 
 from __future__ import annotations
 
+import json
 import logging
+from typing import Any
 
 from agent_bus_client import EventEnvelope, new_event, seed_of
 
@@ -44,6 +46,18 @@ from .mcp_client import MCPClient
 from .skills.registry import SkillRegistry, get_registry
 
 log = logging.getLogger("agent_runtime.runner")
+
+
+def _read_json_file(path: str) -> Any:
+    """Default JSON (Data) file loader: parse the JSON at ``path`` on the runtime filesystem
+    (same trust model as the File Initiator's watched folder). Degrades to ``{}`` with a loud
+    warning on a missing / unparseable file — never crashes a run."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError) as exc:
+        log.warning("JSON block: could not read %r (%s) — using {}", path, exc)
+        return {}
 
 
 def _preview(value, cap: int = 4000) -> str:
@@ -78,6 +92,7 @@ class Runner:
         sio_factory=None,
         file_writer=None,
         web_caller=None,
+        json_reader=None,
     ):
         self._settings = settings
         self._bus = bus
@@ -87,6 +102,9 @@ class Runner:
         # filesystem / HTTP call; None means the real write / request is performed.
         self._file_writer = file_writer
         self._web_caller = web_caller
+        # JSON (Data) block file loader (source=file, §Phase 2): path -> parsed JSON object.
+        # Injectable so tests avoid the real filesystem; None = read the runtime fs.
+        self._json_reader = json_reader or _read_json_file
         # The skill registry (§8.3) — loaded once from settings.skills_dir and shared
         # across runs. Failures to load degrade to None (skills simply don't inject).
         self._skills: SkillRegistry | None = None
@@ -340,16 +358,43 @@ class Runner:
             return out
 
         async def h_data(node: GraphNode, value, ctx: WalkContext):
-            # Data (JSON) block: emit its literal JSON object as the flow value (a general flow
-            # source). When wired to an Agent's `vars` port it is folded at COMPILE time (there
-            # is no `data` node here at all); this handler covers the case where a Data block is
-            # on the runtime flow path (e.g. feeding a normal `in`).
-            return node.config.get("content")
+            # Data (JSON) block: emit a JSON object as the flow value (a general flow source).
+            # `source=inline` uses the literal `content`; `source=file` reads `path` off the
+            # runtime filesystem (same trust model as the File Initiator's watched folder).
+            # The result is cached in ctx.scratch["data_out"][node.id] so an Agent that PULLS
+            # this node through its `vars` port (a non-triggering edge) reads the SAME value
+            # regardless of node run order. Inline Data→Agent.vars is folded at COMPILE time
+            # (no `data` node survives); this covers file sources and general flow-path use.
+            cache = ctx.scratch.setdefault("data_out", {})
+            if node.id in cache:
+                return cache[node.id]
+            cfg = node.config or {}
+            if str(cfg.get("source") or "inline") == "file":
+                out = self._json_reader(str(cfg.get("path") or ""))
+            else:
+                out = cfg.get("content")
+            cache[node.id] = out
+            await self._emit(
+                cid, "db.queried",
+                {"node": node.id, "backend": "data",
+                 "source": cfg.get("source") or "inline", "hit": out is not None},
+            )
+            return out
 
         async def h_agent(node: GraphNode, value, ctx: WalkContext):
             node_record = self._graph_agent_record(node)
             mcp = self._make_mcp(node_record)
-            task = self._build_agent_task(node_record, value, overrides)
+            # PULL vars from any Data (JSON) block wired to this agent's `vars` port. A vars
+            # edge does NOT trigger the agent (the executor skips it in fan-out); its source is
+            # pre-evaluated into ctx.scratch["data_out"]. Later vars edges win over earlier;
+            # the event's payload.data.vars (overrides) wins over all of them (§Phase 2).
+            data_out = ctx.scratch.get("data_out", {})
+            node_vars: dict = {}
+            for e in record.in_edges(node.id, dst_port="vars"):
+                v = data_out.get(e.src)
+                if isinstance(v, dict):
+                    node_vars.update(v)
+            task = self._build_agent_task(node_record, value, overrides, node_vars=node_vars)
 
             # One whole agent invocation (the unit the OUTER loop repeats). Distinct from
             # the Brain node's INNER tools.max_rounds loop, which lives inside run_brain.
@@ -473,7 +518,22 @@ class Runner:
             "destination": h_destination,
         }
         walk_ctx = WalkContext(cid=cid, sender=self._settings.sender_id)
-        await GraphWorkflowExecutor(handlers, on_trace=on_trace).run(record, None, walk_ctx)
+        # Pre-evaluate every Data (JSON) node ONCE into ctx.scratch["data_out"] — its value is
+        # order-independent, so an Agent can PULL its `vars` from a Data node no matter when (or
+        # whether) that node runs on the flow path. Data nodes with NO incoming edge are pure
+        # runtime flow sources: seed them so their value also fans out to their `in` successors.
+        data_out = walk_ctx.scratch.setdefault("data_out", {})
+        source_seeds: list[str] = []
+        for n in record.nodes:
+            if n.kind != "data":
+                continue
+            if n.id not in data_out:
+                data_out[n.id] = await h_data(n, None, walk_ctx)
+            if not record.in_edges(n.id):
+                source_seeds.append(n.id)
+        await GraphWorkflowExecutor(handlers, on_trace=on_trace).run(
+            record, None, walk_ctx, extra_seeds=source_seeds
+        )
         # edge.traversed is now emitted LIVE per edge inside on_trace (with payload).
 
         await self._emit(
@@ -525,18 +585,24 @@ class Runner:
         return AgentRecord.model_validate(rec)
 
     def _build_agent_task(
-        self, record: AgentRecord, incoming: object, overrides: dict
+        self, record: AgentRecord, incoming: object, overrides: dict,
+        node_vars: dict | None = None,
     ) -> str:
         """The task for one agent in a workflow. If the agent has an input template, it
         is formatted with its vars + event overrides + the incoming value bound to
         ``{input}`` (so a template can weave the upstream answer in). If there is no
         template, the incoming value flows through verbatim — this is how agent-1's
-        answer becomes agent-2's task edge-to-edge."""
+        answer becomes agent-2's task edge-to-edge.
+
+        ``node_vars`` are variables PULLED at runtime from a Data (JSON) block wired to this
+        agent's ``vars`` port. Precedence (low→high): the agent's static ``input.vars`` <
+        wired Data vars < event ``payload.data.vars`` overrides — the same ordering the
+        compile-time inline-Data fold uses, so a file-loaded Data block behaves identically."""
         template = record.input.template
         incoming_text = "" if incoming is None else str(incoming)
         if not template:
             return incoming_text
-        merged = {**record.input.vars, "input": incoming_text, **overrides}
+        merged = {**record.input.vars, **(node_vars or {}), "input": incoming_text, **overrides}
         try:
             return template.format(**merged)
         except KeyError as exc:

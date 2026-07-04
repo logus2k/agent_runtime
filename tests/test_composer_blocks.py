@@ -27,7 +27,18 @@ def test_data_block_content_must_be_a_json_object():
     assert any("content" in e for e in DataJson(config={"content": "[1, 2]"}).validate())  # array≠object
     assert DataJson(config={"content": '{"a": 1}'}).validate() == []
     assert DataJson().validate() == []  # empty content is fine (→ {})
-    assert DataJson(config={"content": '{"a": 1}'}).lower() == {"content": {"a": 1}}
+    # inline source lowers to source + parsed content object
+    assert DataJson(config={"content": '{"a": 1}'}).lower() == {
+        "source": "inline", "content": {"a": 1},
+    }
+
+
+def test_data_block_file_source():
+    # file source: path is required, and lowering carries source + path (no content).
+    assert any("path" in e for e in DataJson(config={"source": "file"}).validate())
+    blk = DataJson(config={"source": "file", "path": "/watched/in/params.json"})
+    assert blk.validate() == []
+    assert blk.lower() == {"source": "file", "path": "/watched/in/params.json"}
 
 
 def test_data_block_is_in_the_catalog():

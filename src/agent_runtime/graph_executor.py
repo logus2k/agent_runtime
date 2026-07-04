@@ -68,17 +68,25 @@ class GraphWorkflowExecutor:
         self._on_trace = on_trace
 
     async def run(
-        self, record: GraphRecord, initial: Any, ctx: Optional[WalkContext] = None
+        self, record: GraphRecord, initial: Any, ctx: Optional[WalkContext] = None,
+        *, extra_seeds: Optional[list[str]] = None,
     ) -> WalkContext:
         """Execute the workflow record from its entry node. Returns the ``WalkContext``
         (its ``scratch`` accumulates run state — e.g. per-node run counts and the last
         value delivered to each sink). Raises ``GraphExecutionError`` on an unknown node
-        kind or if the step budget is exceeded."""
+        kind or if the step budget is exceeded.
+
+        ``extra_seeds`` are additional node ids to seed the walk with (value ``None``) besides
+        the entry — used for pure runtime flow SOURCES with no incoming edge (e.g. a Data/JSON
+        block feeding a normal successor). Their handler still runs and fans out normally."""
         ctx = ctx or WalkContext()
         run_counts: dict[str, int] = ctx.scratch.setdefault("run_counts", {})
         sink_values: dict[str, Any] = ctx.scratch.setdefault("sink_values", {})
 
         queue: deque[_Msg] = deque([_Msg(record.entry, initial)])
+        for seed in extra_seeds or []:
+            if seed != record.entry:
+                queue.append(_Msg(seed, None))
         steps = 0
 
         while queue:
@@ -102,7 +110,10 @@ class GraphWorkflowExecutor:
             out_value = await handler(node, msg.value, ctx)
             run_counts[node.id] = run_counts.get(node.id, 0) + 1
 
-            successors = record.out_edges(node.id)
+            # A `vars` edge is a PULL input (the destination reads it from ctx.scratch when it
+            # runs), NOT a triggering message — exclude it from fan-out so it never enqueues a
+            # run of the destination. It is also not what makes a node a "sink".
+            successors = [e for e in record.out_edges(node.id) if e.dst_port != "vars"]
             if not successors:
                 # A sink (destination / terminal): record its value, no fan-out.
                 sink_values[node.id] = out_value
