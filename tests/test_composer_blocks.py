@@ -18,27 +18,42 @@ from agent_runtime.composer import (
     Trigger,
     WhatsApp,
 )
-from agent_runtime.composer.blocks import DataJson
+from agent_runtime.composer.blocks import DataSource
 from agent_runtime.composer.schema import ANY, STRING, BlockSchema, DataSchema, Port
 
 
-def test_data_block_content_must_be_a_json_object():
-    assert any("content" in e for e in DataJson(config={"content": "{not json"}).validate())
-    assert any("content" in e for e in DataJson(config={"content": "[1, 2]"}).validate())  # array≠object
-    assert DataJson(config={"content": '{"a": 1}'}).validate() == []
-    assert DataJson().validate() == []  # empty content is fine (→ {})
-    # inline source lowers to source + parsed content object
-    assert DataJson(config={"content": '{"a": 1}'}).lower() == {
-        "source": "inline", "content": {"a": 1},
+def test_data_block_inline_object_content_must_be_an_object():
+    # default format = json: inline content must parse to an OBJECT.
+    assert any("content" in e for e in DataSource(config={"content": "{not json"}).validate())
+    assert any("content" in e for e in DataSource(config={"content": "[1, 2]"}).validate())  # array≠object
+    assert DataSource(config={"content": '{"a": 1}'}).validate() == []
+    assert DataSource().validate() == []  # empty content is fine (→ {})
+    # inline lowers to source + format + RAW content (runtime parses it)
+    assert DataSource(config={"content": '{"a": 1}'}).lower() == {
+        "source": "inline", "format": "json", "content": '{"a": 1}',
     }
 
 
 def test_data_block_file_source():
-    # file source: path is required, and lowering carries source + path (no content).
-    assert any("path" in e for e in DataJson(config={"source": "file"}).validate())
-    blk = DataJson(config={"source": "file", "path": "/watched/in/params.json"})
+    # file source: path is required, and lowering carries source + format + path (no content).
+    assert any("path" in e for e in DataSource(config={"source": "file"}).validate())
+    blk = DataSource(config={"source": "file", "format": "csv", "path": "/watched/in/data.csv"})
     assert blk.validate() == []
-    assert blk.lower() == {"source": "file", "path": "/watched/in/params.json"}
+    assert blk.lower() == {"source": "file", "format": "csv", "path": "/watched/in/data.csv"}
+
+
+def test_data_block_format_rules():
+    # unknown format is rejected
+    assert any("unknown format" in e for e in DataSource(config={"format": "docx"}).validate())
+    # binary format inline is rejected (must be a file)
+    assert any("binary" in e for e in
+               DataSource(config={"format": "parquet", "source": "inline"}).validate())
+    assert DataSource(config={"format": "parquet", "source": "file", "path": "/x.parquet"}).validate() == []
+    # inline YAML object validates + folds-eligible; a non-object format (csv) is lenient inline
+    assert DataSource(config={"format": "yaml", "content": "a: 1\nb: 2"}).validate() == []
+    assert DataSource(config={"format": "csv", "content": "x,y\n1,2"}).validate() == []
+    # inline YAML that is a scalar (not an object) is rejected
+    assert any("content" in e for e in DataSource(config={"format": "yaml", "content": "just a string"}).validate())
 
 
 def test_data_block_is_in_the_catalog():

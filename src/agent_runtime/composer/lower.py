@@ -29,6 +29,7 @@ import json
 from typing import Any, Optional
 
 from .catalog import BLOCK_TYPES
+from ..data_formats import OBJECT_FORMATS, parse_object
 
 DSL_VERSION = "0.1"
 
@@ -477,12 +478,16 @@ class ProjectLowering:
                 continue
             if Graph._in_slot_label(dst, lk[4]) != "vars":
                 continue
-            # Only INLINE data folds at compile time; a file-source (or fed) Data block is a
-            # runtime source — leave it in the graph for the executor + runtime vars merge.
+            # Only an INLINE OBJECT-format (json/yaml/toml) Data block folds at compile time; a
+            # file-source, fed, or non-object (csv/text/pdf/…) Data block is a runtime source —
+            # leave it in the graph for the executor + runtime vars merge.
             sprops = Graph._props(src)
+            fmt = str(sprops.get("format") or "json")
             if str(sprops.get("source") or "inline") == "file" or g._in_links(src.get("id")):
                 continue
-            content = _as_obj(sprops.get("content"))
+            if fmt not in OBJECT_FORMATS:
+                continue
+            content = parse_object(fmt, sprops.get("content"))
             if content:
                 props = dst.setdefault("properties", {})
                 props["input_vars"] = {**_as_obj(props.get("input_vars")), **content}

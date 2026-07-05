@@ -21,6 +21,7 @@ message.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -35,6 +36,7 @@ from .composer.executor import ExecContext, GraphExecutor
 from .composer.ir import IREdge, IRGraph, IRNode
 from .config import Settings
 from .dsl import AgentRecord, Brain, Delivery, Guardrails, Judge, Rag
+from .data_formats import load_file as _load_data_file, load_inline as _load_data_inline
 from .dsl_graph import GraphNode, GraphRecord, from_flat_record
 from .debug import DebugStopped, registry as debug_registry
 from .graph_executor import GraphWorkflowExecutor, WalkContext
@@ -49,16 +51,6 @@ from .skills.registry import SkillRegistry, get_registry
 log = logging.getLogger("agent_runtime.runner")
 
 
-def _read_json_file(path: str) -> Any:
-    """Default JSON (Data) file loader: parse the JSON at ``path`` on the runtime filesystem
-    (same trust model as the File Initiator's watched folder). Degrades to ``{}`` with a loud
-    warning on a missing / unparseable file — never crashes a run."""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError) as exc:
-        log.warning("JSON block: could not read %r (%s) — using {}", path, exc)
-        return {}
 
 
 def _preview(value, cap: int = 4000) -> str:
@@ -93,7 +85,7 @@ class Runner:
         sio_factory=None,
         file_writer=None,
         web_caller=None,
-        json_reader=None,
+        data_loader=None,
     ):
         self._settings = settings
         self._bus = bus
@@ -103,9 +95,10 @@ class Runner:
         # filesystem / HTTP call; None means the real write / request is performed.
         self._file_writer = file_writer
         self._web_caller = web_caller
-        # JSON (Data) block file loader (source=file, §Phase 2): path -> parsed JSON object.
-        # Injectable so tests avoid the real filesystem; None = read the runtime fs.
-        self._json_reader = json_reader or _read_json_file
+        # Data-source block FILE loader: (format, path) -> parsed value (dict/list/str).
+        # Injectable so tests avoid the real filesystem; None = read the runtime fs
+        # (data_formats.load_file, which dispatches by format incl. binary pdf/parquet/xlsx).
+        self._data_loader = data_loader or _load_data_file
         # The skill registry (§8.3) — loaded once from settings.skills_dir and shared
         # across runs. Failures to load degrade to None (skills simply don't inject).
         self._skills: SkillRegistry | None = None
@@ -371,26 +364,30 @@ class Runner:
             return out
 
         async def h_data(node: GraphNode, value, ctx: WalkContext):
-            # Data (JSON) block: emit a JSON object as the flow value (a general flow source).
-            # `source=inline` uses the literal `content`; `source=file` reads `path` off the
-            # runtime filesystem (same trust model as the File Initiator's watched folder).
-            # The result is cached in ctx.scratch["data_out"][node.id] so an Agent that PULLS
-            # this node through its `vars` port (a non-triggering edge) reads the SAME value
-            # regardless of node run order. Inline Data→Agent.vars is folded at COMPILE time
-            # (no `data` node survives); this covers file sources and general flow-path use.
+            # Data source block: load a value in one of many formats (object/tabular/document)
+            # and emit it as the flow value (a general flow source). `source=inline` parses the
+            # typed `content` per `format`; `source=file` reads `path` off the runtime filesystem
+            # (same trust model as the File Initiator's watched folder) — file loads run in a
+            # thread so a big parquet/pdf parse never blocks the event loop. The result is cached
+            # in ctx.scratch["data_out"][node.id] so an Agent that PULLS this node through its
+            # `vars` port (a non-triggering edge) reads the SAME value regardless of run order.
+            # An inline OBJECT source wired to vars is folded at COMPILE time (no `data` node
+            # survives); this covers file sources, non-object formats, and general flow-path use.
             cache = ctx.scratch.setdefault("data_out", {})
             if node.id in cache:
                 return cache[node.id]
             cfg = node.config or {}
-            if str(cfg.get("source") or "inline") == "file":
-                out = self._json_reader(str(cfg.get("path") or ""))
+            fmt = str(cfg.get("format") or "json")
+            source = str(cfg.get("source") or "inline")
+            if source == "file":
+                out = await asyncio.to_thread(self._data_loader, fmt, str(cfg.get("path") or ""))
             else:
-                out = cfg.get("content")
+                out = _load_data_inline(fmt, cfg.get("content"))
             cache[node.id] = out
             await self._emit(
                 cid, "db.queried",
-                {"node": node.id, "backend": "data",
-                 "source": cfg.get("source") or "inline", "hit": out is not None},
+                {"node": node.id, "backend": "data", "format": fmt, "source": source,
+                 "hit": out not in (None, {}, [], "")},
             )
             return out
 

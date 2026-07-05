@@ -23,7 +23,7 @@ from .blocks import (
     Composite,
     ConsoleReceive,
     ConsoleSend,
-    DataJson,
+    DataSource,
     FileDestination,
     FileInitiator,
     GraphDatabase,
@@ -51,7 +51,7 @@ BLOCK_TYPES: dict[str, type[Block]] = {
     VectorDatabase.kind: VectorDatabase,
     GraphDatabase.kind: GraphDatabase,
     # Data (JSON): emit a literal JSON object → an Agent's `vars` port (or a general flow source).
-    DataJson.kind: DataJson,
+    DataSource.kind: DataSource,
     # New boundary SOURCES (§9.3.1) — out-only initiators, inert in graph execution.
     FileInitiator.kind: FileInitiator,
     WebInitiator.kind: WebInitiator,

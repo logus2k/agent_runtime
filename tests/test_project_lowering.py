@@ -86,6 +86,51 @@ def test_data_block_content_as_json_string_folds_too():
     assert agent.config["record"]["input"]["vars"] == {"topic": "safety"}
 
 
+def test_inline_yaml_data_folds_into_agent_vars():
+    """An INLINE YAML (object) Data block on the vars port folds at compile time, like JSON."""
+    comp = {
+        "nodes": [
+            _trigger(),
+            {"id": 2, "type": "agent", "properties": {"persona": "p"},
+             "inputs": [{"name": "in", "link": 1}, {"name": "vars", "link": 3}],
+             "outputs": [{"name": "out", "links": [2]}]},
+            {"id": 3, "type": "bus", "properties": {"target": "b"},
+             "inputs": [{"name": "in", "link": 2}]},
+            {"id": 4, "type": "data",
+             "properties": {"format": "yaml", "content": "topic: safety\nn: 3"},
+             "outputs": [{"name": "out", "links": [3]}]},
+        ],
+        "links": [[1, 1, 0, 2, 0, "string"], [2, 2, 0, 3, 0, "string"], [3, 4, 0, 2, 1, "any"]],
+    }
+    rec, _ = lower_project("u", "D", comp)
+    assert "data" not in {n.kind for n in rec.nodes}  # folded out
+    agent = next(n for n in rec.nodes if n.kind == "agent")
+    assert agent.config["record"]["input"]["vars"] == {"topic": "safety", "n": 3}
+
+
+def test_non_object_format_data_on_vars_stays_a_runtime_node():
+    """A CSV (non-object) Data block on the vars port is NOT folded — it can only be resolved at
+    runtime (rows), so it stays a `data` node with the vars edge (h_agent safely ignores non-dict)."""
+    comp = {
+        "nodes": [
+            _trigger(),
+            {"id": 2, "type": "agent", "properties": {"persona": "p"},
+             "inputs": [{"name": "in", "link": 1}, {"name": "vars", "link": 3}],
+             "outputs": [{"name": "out", "links": [2]}]},
+            {"id": 3, "type": "bus", "properties": {"target": "b"},
+             "inputs": [{"name": "in", "link": 2}]},
+            {"id": 4, "type": "data",
+             "properties": {"format": "csv", "content": "x,y\n1,2"},
+             "outputs": [{"name": "out", "links": [3]}]},
+        ],
+        "links": [[1, 1, 0, 2, 0, "string"], [2, 2, 0, 3, 0, "string"], [3, 4, 0, 2, 1, "any"]],
+    }
+    rec, _ = lower_project("u", "D", comp)
+    assert "data" in {n.kind for n in rec.nodes}  # NOT folded (non-object format)
+    data = next(n for n in rec.nodes if n.kind == "data")
+    assert data.config["format"] == "csv"
+
+
 def test_data_block_wired_to_a_normal_in_stays_as_a_flow_node():
     """A Data block NOT on a `vars` port (here → an Agent's task `in`) is NOT folded — it stays
     as a runtime `data` node (the general flow-source path, h_data)."""
@@ -130,7 +175,7 @@ def test_file_source_data_on_vars_port_stays_as_a_node_with_a_vars_edge():
     agent = next(n for n in rec.nodes if n.kind == "agent")
     vars_edges = rec.in_edges(agent.id, dst_port="vars")
     assert [e.src for e in vars_edges] == [data.id]
-    assert data.config == {"source": "file", "path": "/watched/in/params.json"}
+    assert data.config == {"source": "file", "format": "json", "path": "/watched/in/params.json"}
 
 
 def test_agent_with_rag_pre_decomposes_into_a_rag_node_before_the_agent():

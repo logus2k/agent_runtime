@@ -26,6 +26,13 @@ from abc import ABC, abstractmethod
 from typing import Any, Optional
 
 from .schema import ANY, STRING, BlockSchema, ConfigField, DataSchema, Port
+from ..data_formats import (
+    ALL_FORMATS,
+    BINARY_FORMATS,
+    INLINE_FORMATS,
+    OBJECT_FORMATS,
+    parse_object_strict,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -703,16 +710,19 @@ class GraphDatabase(Block):
         return cfg
 
 
-class DataJson(Block):
-    """Data (JSON): emits a literal JSON **object** as its flow value. Wire its ``out`` into an
-    Agent's ``vars`` port to supply the Agent's named template variables ({topic}, {n}) — an
-    inline Data block is folded into the Agent's ``input.vars`` at COMPILE time (no runtime step).
-    It is also a general flow source: its JSON is emitted at run time wherever the executor reaches
-    it (``h_data``)."""
+class DataSource(Block):
+    """Data: a multi-format data SOURCE. Loads a value from one of many formats — object
+    (json/yaml/toml), tabular (csv/tsv/jsonl/parquet/xlsx), or document (markdown/text/html/
+    xml/pdf) — either INLINE (typed content) or from a FILE on the runtime filesystem, and
+    emits it on ``out``. Wire ``out`` into an Agent's ``vars`` port to supply named template
+    variables ({topic}, {n}); an INLINE **object** source folds into the Agent's ``input.vars``
+    at COMPILE time (no runtime step). It is also a general flow source: its value is emitted at
+    run time wherever the executor reaches it (``h_data``). Binary formats (pdf/parquet/xlsx)
+    are file-only."""
 
     kind = "data"
     category = "Block"
-    label = "JSON"
+    label = "Data Source"
 
     def get_schema(self) -> BlockSchema:
         return BlockSchema(
@@ -723,37 +733,48 @@ class DataJson(Block):
             config=[
                 ConfigField("source", "enum", values=["inline", "file"], default="inline",
                             control="select", label="source"),
-                # inline vs file are mutually exclusive — each field shows only for its source.
-                ConfigField("content", "json", control="json", label="JSON content",
-                            placeholder='{ "topic": "AI agents", "n": 5 }',
-                            show_if={"source": "inline"}),
+                ConfigField("format", "enum", values=list(ALL_FORMATS), default="json",
+                            control="select", label="format"),
+                # inline content shows only for inline + a non-binary (typeable) format.
+                ConfigField("content", "string", control="textarea", label="inline content",
+                            placeholder='{ "topic": "AI agents", "n": 5 }   (json/yaml/toml/csv/…)',
+                            show_if={"source": "inline", "format": list(INLINE_FORMATS)}),
                 ConfigField("path", "string", control="text", label="file path",
-                            placeholder="/watched/in/params.json",             # runtime fs
+                            placeholder="/watched/in/data.csv",                # runtime fs
                             show_if={"source": "file"}),
             ],
         )
 
     def validate(self) -> list[str]:
         errors = super().validate()
+        fmt = str(self.cfg("format") or "json")
+        if fmt not in ALL_FORMATS:
+            errors.append(f"{self.label}: unknown format '{fmt}'")
+            return errors
         source = str(self.cfg("source") or "inline")
         if source == "file":
             if not str(self.cfg("path") or "").strip():
                 errors.append(f"{self.label}: file path is required when source=file")
-        elif self.cfg("content") not in (None, ""):
-            # inline content must parse to a JSON OBJECT (mirrors the Agent's input_vars rule).
+        elif fmt in BINARY_FORMATS:
+            errors.append(f"{self.label}: format '{fmt}' is binary — requires source=file")
+        elif fmt in OBJECT_FORMATS and str(self.cfg("content") or "").strip():
+            # inline object content must parse to an OBJECT (mirrors the Agent's input_vars rule).
             try:
-                _json_obj(self.cfg("content"), where=f"{self.label} content")
+                parse_object_strict(fmt, self.cfg("content"))
             except ValueError as exc:
-                errors.append(str(exc))
+                errors.append(f"{self.label} content: {exc}")
         return errors
 
     def lower(self) -> dict[str, Any]:
         source = str(self.cfg("source") or "inline")
-        frag: dict[str, Any] = {"source": source}
+        fmt = str(self.cfg("format") or "json")
+        frag: dict[str, Any] = {"source": source, "format": fmt}
         if source == "file":
             frag["path"] = str(self.cfg("path") or "").strip()
         else:
-            frag["content"] = _json_obj(self.cfg("content"), where=f"{self.label} content")
+            # Keep the RAW authored content (str or dict); the runtime parses it per format
+            # (load_inline), and the compile-time fold parses object formats (parse_object).
+            frag["content"] = self.cfg("content")
         return frag
 
 

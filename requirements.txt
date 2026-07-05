@@ -6,9 +6,16 @@ uvicorn==0.49.0           # ASGI server (matches agent_bus/scheduler)
 pydantic==2.13.4          # DSL models + envelope (match agent_bus)
 python-dotenv==1.2.2      # .env loading in dev
 httpx==0.28.1             # agent_server + noted MCP HTTP client
-pyyaml>=6.0               # agent records (data/agents/*.yaml)
+pyyaml>=6.0               # agent records (data/agents/*.yaml) + Data block YAML format
 python-socketio[asyncio_client]>=5.11   # WhatsApp bridge /agent delivery
 valkey-glide==2.4.2       # bus transport (used via agent-bus-client[bus]); glibc only
+
+# Data source block — multi-format file loaders (glibc manylinux wheels on slim-bookworm).
+pypdf>=5.0                # Data block: PDF text extraction
+beautifulsoup4>=4.12      # Data block: HTML readable-text extraction
+lxml>=5.0                 # bs4 parser backend (Data block HTML)
+pyarrow>=18.0             # Data block: Parquet (columnar) — heavy (~100MB), glibc wheels
+openpyxl>=3.1             # Data block: Excel (.xlsx) rows
 
 # Bus client — the canonical consumer/producer SDK + envelope. DO NOT vendor.
 # It is a local sibling-repo package; for dev install it editable:
