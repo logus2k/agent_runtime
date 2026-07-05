@@ -710,6 +710,21 @@ class GraphDatabase(Block):
         return cfg
 
 
+# Per-format inline-content example placeholders (shown in the editor when a format is chosen).
+_CONTENT_EXAMPLES: dict[str, str] = {
+    "json": '{ "topic": "AI agents", "n": 5 }',
+    "yaml": "topic: AI agents\nn: 5",
+    "toml": 'topic = "AI agents"\nn = 5',
+    "csv": "name,age\nAlice,30\nBob,25",
+    "tsv": "name\tage\nAlice\t30",
+    "jsonl": '{"id": 1, "q": "…"}\n{"id": 2, "q": "…"}',
+    "markdown": "# Title\n\nBody **text**…",
+    "text": "plain text…",
+    "html": "<h1>Title</h1>\n<p>Body text</p>",
+    "xml": "<root>\n  <item>hello</item>\n</root>",
+}
+
+
 class DataSource(Block):
     """Data: a multi-format data SOURCE. Loads a value from one of many formats — object
     (json/yaml/toml), tabular (csv/tsv/jsonl/parquet/xlsx), or document (markdown/text/html/
@@ -732,12 +747,17 @@ class DataSource(Block):
             ports=[Port("out", "out", ANY)],
             config=[
                 ConfigField("source", "enum", values=["inline", "file"], default="inline",
-                            control="select", label="source"),
+                            control="select", label="source",
+                            # binary formats (pdf/parquet/xlsx) have no inline form → file only.
+                            values_by={"field": "format",
+                                       "values": {f: ["file"] for f in BINARY_FORMATS}}),
                 ConfigField("format", "enum", values=list(ALL_FORMATS), default="json",
                             control="select", label="format"),
-                # inline content shows only for inline + a non-binary (typeable) format.
+                # inline content shows only for inline + a non-binary (typeable) format; the
+                # placeholder example adapts to the chosen format (placeholders_by → format).
                 ConfigField("content", "string", control="textarea", label="inline content",
-                            placeholder='{ "topic": "AI agents", "n": 5 }   (json/yaml/toml/csv/…)',
+                            placeholder="type the inline content…",
+                            placeholders_by={"field": "format", "values": _CONTENT_EXAMPLES},
                             show_if={"source": "inline", "format": list(INLINE_FORMATS)}),
                 ConfigField("path", "string", control="text", label="file path",
                             placeholder="/watched/in/data.csv",                # runtime fs

@@ -14,7 +14,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
@@ -75,9 +76,22 @@ app.include_router(resources_router)
 
 
 @app.get("/health")
-async def health() -> dict:
-    """Liveness probe (used by the compose healthcheck)."""
-    return {"status": "ok", "service": "agent_runtime", "version": __version__}
+async def health(request: Request) -> Response:
+    """Liveness + readiness probe (used by the compose healthcheck).
+
+    Reports ``degraded`` (HTTP 503) when the farm's consume loop can't read the stream — e.g.
+    the consumer group vanished AND couldn't be recreated (bus down). That turns a farm that is
+    "up" but silently not consuming into a FAILING healthcheck, so an orchestrator/monitor sees
+    it instead of the failure hiding behind a green container."""
+    farm = getattr(request.app.state, "farm", None)
+    consuming = farm.consuming() if farm is not None and hasattr(farm, "consuming") else True
+    body = {
+        "status": "ok" if consuming else "degraded",
+        "service": "agent_runtime",
+        "version": __version__,
+        "consuming": consuming,
+    }
+    return JSONResponse(body, status_code=200 if consuming else 503)
 
 
 # Static admin UI at the app root. Mounted LAST so the explicit /health and /admin

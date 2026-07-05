@@ -113,6 +113,16 @@ class ConfigField:
     control: str = "text"          # text | textarea | json | number | select
     label: Optional[str] = None    # friendly caption (defaults to key)
     placeholder: Optional[str] = None
+    # Per-sibling-value placeholder: {"field": <other_key>, "values": {<value>: <placeholder>}}.
+    # The editor picks the placeholder for the CURRENT value of the sibling field (falling back
+    # to ``placeholder``) — e.g. a ``content`` field whose example changes with ``format``.
+    placeholders_by: Optional[dict[str, Any]] = None
+    # Per-sibling-value allowed options for an enum/select: {"field": <key>, "values": {<sibling
+    # value>: [opt, …]}}. The editor restricts this field's options to the entry for the sibling's
+    # CURRENT value (falling back to ``values``); if the current value falls outside the allowed
+    # set it snaps to the first allowed option — e.g. ``source`` limited to ["file"] for a binary
+    # ``format`` (parquet/pdf/xlsx have no inline form).
+    values_by: Optional[dict[str, Any]] = None
     min: Optional[float] = None    # for control == "number"
     max: Optional[float] = None
     # Conditional visibility: {other_key: value} — the editor shows this field ONLY when the
@@ -132,6 +142,10 @@ class ConfigField:
             out["default"] = self.default
         if self.placeholder is not None:
             out["placeholder"] = self.placeholder
+        if self.placeholders_by is not None:
+            out["placeholders_by"] = self.placeholders_by
+        if self.values_by is not None:
+            out["values_by"] = self.values_by
         if self.min is not None:
             out["min"] = self.min
         if self.max is not None:

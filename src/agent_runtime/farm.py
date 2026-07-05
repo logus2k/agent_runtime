@@ -69,12 +69,33 @@ class Farm:
         self._jobs: set[asyncio.Task] = set()
         self._running = False
         self._tasks: list[asyncio.Task] = []
+        # Liveness of the consume loop. False when the loop can't read the stream even after
+        # trying to recreate a missing consumer group (i.e. the bus is truly unreachable) —
+        # surfaced by /health so a dead-but-"up" farm reads as degraded, not silently broken.
+        self._consume_ok = True
 
     @property
     def bus(self) -> BusClient:
         if self._bus is None:
             raise RuntimeError("farm bus not connected")
         return self._bus
+
+    def consuming(self) -> bool:
+        """Is the consume loop currently able to read the farm stream? (drives /health)."""
+        return self._consume_ok
+
+    @staticmethod
+    def _is_missing_group(exc: Exception) -> bool:
+        """A Valkey/Redis ``NOGROUP`` — the stream/consumer-group vanished (flush, restart,
+        eviction). Recoverable by recreating the group."""
+        return "NOGROUP" in str(exc)
+
+    async def _ensure_group(self) -> None:
+        """Create the consumer group if absent (idempotent — MKSTREAM, ignores BUSYGROUP).
+        Called at startup AND whenever the consume loop detects the group has gone missing,
+        so 'the group exists' is a maintained invariant, not one-time startup state."""
+        s = self._settings
+        await self.bus.ensure_group(s.farm_stream_key(), s.consumer_group, start="$")
 
     def set_handler(self, handler: AgentHandler) -> None:
         """Attach the pipeline handler (built after connect so it can use the bus)."""
@@ -123,9 +144,7 @@ class Farm:
                 f"could not connect to valkey {s.valkey_host}:{s.valkey_port} "
                 f"after {s.connect_retries} attempts: {last_exc}"
             )
-        await self._bus.ensure_group(
-            s.farm_stream_key(), s.consumer_group, start="$"
-        )
+        await self._ensure_group()
         log.info(
             "consumer group '%s' ready on %s as '%s'",
             s.consumer_group, s.farm_stream_key(), self._consumer,
@@ -177,10 +196,25 @@ class Farm:
                     count=s.read_count,
                     block_ms=None,
                 )
+                self._consume_ok = True
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - loop must survive transient bus errors, loudly
-                log.error("read_group error (continuing): %s", exc, exc_info=True)
+                # We do NOT recreate a missing group here. Recreating it would MASK the fault:
+                # streams are now MAXLEN-bounded (not key-TTL'd), so the group vanishing means a
+                # genuine problem (an ops flush, a fresh/empty bus) — surface it, don't hide it.
+                # Mark NOT consuming so /health returns degraded → the healthcheck fails → the
+                # process is restarted → startup's ensure_group re-establishes the group. Fail
+                # loud + restart, never silently self-heal. (See documents/debug_specification.md
+                # and the bus-resilience notes.)
+                self._consume_ok = False   # any read failure → not consuming → /health degraded
+                if self._is_missing_group(exc):
+                    log.error(
+                        "consumer group '%s' missing on %s — NOT consuming (needs restart): %s",
+                        s.consumer_group, stream, exc,
+                    )
+                else:
+                    log.error("read_group error (continuing): %s", exc, exc_info=True)
                 await asyncio.sleep(1.0)
                 continue
             for d in deliveries:
