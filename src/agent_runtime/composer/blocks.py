@@ -723,10 +723,13 @@ class DataJson(Block):
             config=[
                 ConfigField("source", "enum", values=["inline", "file"], default="inline",
                             control="select", label="source"),
+                # inline vs file are mutually exclusive — each field shows only for its source.
                 ConfigField("content", "json", control="json", label="JSON content",
-                            placeholder='{ "topic": "AI agents", "n": 5 }'),  # source=inline
+                            placeholder='{ "topic": "AI agents", "n": 5 }',
+                            show_if={"source": "inline"}),
                 ConfigField("path", "string", control="text", label="file path",
-                            placeholder="/watched/in/params.json"),           # source=file (runtime fs)
+                            placeholder="/watched/in/params.json",             # runtime fs
+                            show_if={"source": "file"}),
             ],
         )
 

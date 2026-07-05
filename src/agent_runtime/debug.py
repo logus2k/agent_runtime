@@ -39,12 +39,17 @@ class DebugSession:
     queue releases the gate: ``step()`` releases exactly one node; ``cont()``/``stop()`` set the
     mode and release any current wait so it re-reads the mode."""
 
-    def __init__(self, cid: str, uid: str, owner: Optional[str] = None) -> None:
+    def __init__(self, cid: str, uid: str, owner: Optional[str] = None,
+                 breakpoints: Optional[list] = None, bp_enabled: bool = True) -> None:
         self.cid = cid
         self.uid = uid                 # deployed record uid — for owner-gating the endpoints
         self.owner = owner             # record owner (sub) captured at creation
         self.mode = "step"             # 'step' | 'continue' | 'stopped'
         self.paused_node: Optional[str] = None
+        # Breakpoints (compiled node ids, e.g. "agent:2"): in 'continue' mode the run pauses only
+        # at these (VS Code semantics). ``bp_enabled`` = the Enable/Disable-All toggle.
+        self.breakpoints: set = set(breakpoints or [])
+        self.bp_enabled = bp_enabled
         self.started_at = time.time()
         self._tokens: "asyncio.Queue[int]" = asyncio.Queue()
         self._last_activity = time.monotonic()
@@ -59,27 +64,40 @@ class DebugSession:
 
     def state(self) -> dict:
         return {"cid": self.cid, "uid": self.uid, "mode": self.mode,
-                "paused_node": self.paused_node, "idle_seconds": round(self.idle_seconds, 1)}
+                "paused_node": self.paused_node, "idle_seconds": round(self.idle_seconds, 1),
+                "breakpoints": sorted(self.breakpoints), "bp_enabled": self.bp_enabled}
 
     # --- the pause-gate (called by the executor before each node) ---
     async def gate(self, node_id: str, kind: str, incoming: Any,
                    emit: Optional[PauseEmit] = None) -> None:
         """Block before running ``node_id`` until the user steps/continues (or raise on stop).
-        In 'continue' mode returns at once; in 'stopped' mode raises ``DebugStopped``."""
+        Pauses when STEPPING (every node) OR the node is an enabled breakpoint (VS Code: Continue
+        runs to the next breakpoint). 'continue' with no matching breakpoint returns at once;
+        'stopped' raises ``DebugStopped``."""
         self.touch()
         if self.mode == "stopped":
             raise DebugStopped(self.cid)
-        if self.mode == "continue":
+        pause_here = self.mode == "step" or (self.bp_enabled and node_id in self.breakpoints)
+        if not pause_here:
             return
-        # step mode → announce the pause point, then wait for a token.
+        # announce the pause point, then wait for a token.
         self.paused_node = node_id
         if emit is not None:
-            await emit("node.paused", {"node": node_id, "kind": kind, "incoming": incoming})
+            await emit("node.paused", {"node": node_id, "kind": kind, "incoming": incoming,
+                                       "at_breakpoint": node_id in self.breakpoints})
         await self._tokens.get()
         self.touch()
         self.paused_node = None
         if self.mode == "stopped":
             raise DebugStopped(self.cid)
+
+    def set_breakpoints(self, node_ids: list, enabled: Optional[bool] = None) -> None:
+        """Replace the breakpoint set (and optionally the enabled flag) mid-run — Continue then
+        respects the new set."""
+        self.touch()
+        self.breakpoints = set(node_ids or [])
+        if enabled is not None:
+            self.bp_enabled = bool(enabled)
 
     # --- control (called by the endpoints) ---
     def step(self) -> None:
@@ -106,8 +124,9 @@ class DebugRegistry:
     def __init__(self) -> None:
         self._sessions: dict[str, DebugSession] = {}
 
-    def create(self, cid: str, uid: str, owner: Optional[str] = None) -> DebugSession:
-        s = DebugSession(cid, uid, owner)
+    def create(self, cid: str, uid: str, owner: Optional[str] = None,
+               breakpoints: Optional[list] = None, bp_enabled: bool = True) -> DebugSession:
+        s = DebugSession(cid, uid, owner, breakpoints=breakpoints, bp_enabled=bp_enabled)
         self._sessions[cid] = s
         return s
 

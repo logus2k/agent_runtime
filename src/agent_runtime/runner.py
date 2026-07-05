@@ -306,9 +306,14 @@ class Runner:
         _record_uid, initial_task = seed_of(env)
         # Step-by-step debugging (documents/debug_specification.md): a run fired with
         # ``debug: true`` gets a DebugSession keyed by cid — the executor pauses before each node.
-        debug_flag = bool((env.payload.data or {}).get("debug"))
+        _data = env.payload.data or {}
+        debug_flag = bool(_data.get("debug"))
         debug_session = (
-            debug_registry.create(cid, record.uid, getattr(record, "owner", None))
+            debug_registry.create(
+                cid, record.uid, getattr(record, "owner", None),
+                breakpoints=_data.get("breakpoints") or [],
+                bp_enabled=_data.get("bp_enabled", True),
+            )
             if debug_flag else None
         )
 

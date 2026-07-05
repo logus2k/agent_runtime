@@ -655,6 +655,8 @@ async def undeploy(uid: str, request: Request) -> dict:
 class _FireBody(BaseModel):
     task: str = ""
     debug: bool = False   # run in step-by-step debug mode (pauses before each node)
+    breakpoints: list[str] = []   # compiled node ids to break at in Continue mode (e.g. "agent:2")
+    bp_enabled: bool = True        # the Enable/Disable-All-Breakpoints toggle
 
 
 @router.post("/projects/{uid}/fire")
@@ -684,9 +686,12 @@ async def fire_project(uid: str, body: _FireBody, request: Request) -> dict:
         cid=cid,
     )
     if body.debug:
-        # The SDK's fired_event hardcodes data={record_uid, task}; carry the debug flag on the
-        # envelope's payload.data (survives the bus round-trip → read by runner.run_graph_record).
+        # The SDK's fired_event hardcodes data={record_uid, task}; carry the debug flag +
+        # breakpoints on the envelope's payload.data (survives the bus round-trip → read by
+        # runner.run_graph_record).
         env.payload.data["debug"] = True
+        env.payload.data["breakpoints"] = list(body.breakpoints or [])
+        env.payload.data["bp_enabled"] = bool(body.bp_enabled)
     entry_id = await bus.publish(settings.farm_stream_key(), env)
     log.info("manual fire (console) uid=%s cid=%s debug=%s entry=%s task=%r",
              uid, cid, body.debug, entry_id, body.task[:120])
@@ -741,6 +746,21 @@ async def debug_state(uid: str, request: Request, cid: str) -> dict:
     """Current state of a debug session (for a UI that reconnects mid-run)."""
     session = _debug_session_for(uid, cid, request)
     return {"ok": True, "active": True, **session.state()}
+
+
+class _BreakpointsBody(BaseModel):
+    cid: str
+    breakpoints: list[str] = []
+    bp_enabled: Optional[bool] = None
+
+
+@router.post("/projects/{uid}/breakpoints")
+async def debug_breakpoints(uid: str, body: _BreakpointsBody, request: Request) -> dict:
+    """Update a running debug session's breakpoints (and/or the enable-all flag) — Continue then
+    respects the new set (toggle/remove/enable/disable-all mid-run)."""
+    session = _debug_session_for(uid, body.cid, request)
+    session.set_breakpoints(body.breakpoints, enabled=body.bp_enabled)
+    return {"ok": True, **session.state()}
 
 
 @router.get("/projects/{uid}/events")

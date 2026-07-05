@@ -115,6 +115,11 @@ class ConfigField:
     placeholder: Optional[str] = None
     min: Optional[float] = None    # for control == "number"
     max: Optional[float] = None
+    # Conditional visibility: {other_key: value} — the editor shows this field ONLY when the
+    # sibling property ``other_key`` currently equals ``value`` (e.g. a `content` field shown
+    # only when ``source == "inline"``). Empty/None = always shown. Values may be a single
+    # scalar or a list of accepted values.
+    show_if: Optional[dict[str, Any]] = None
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -131,6 +136,8 @@ class ConfigField:
             out["min"] = self.min
         if self.max is not None:
             out["max"] = self.max
+        if self.show_if:
+            out["show_if"] = self.show_if
         return out
 
 

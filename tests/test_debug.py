@@ -100,6 +100,43 @@ async def test_continue_runs_to_completion_without_pausing():
     assert paused.empty()                                   # never paused
 
 
+async def test_continue_pauses_at_breakpoint():
+    # A breakpoint on node "b": Continue runs a, pauses AT b, then Continue again runs b, c.
+    session = DebugSession("cid-bp", "t1", breakpoints=["b"])
+    session.mode = "continue"                               # continue from the start (no waiting gate)
+    ex, ran, paused = _stepping_executor(session)
+    task = asyncio.create_task(ex.run(_linear_record(), None))
+    assert await asyncio.wait_for(paused.get(), 1) == "b"   # ran a (no bp), paused at b (bp)
+    assert ran == ["a"]
+    session.cont()                                          # resume past the breakpoint
+    await asyncio.wait_for(task, 1)
+    assert ran == ["a", "b", "c"]
+
+
+async def test_disabled_breakpoints_do_not_pause():
+    session = DebugSession("cid-bpoff", "t1", breakpoints=["b"], bp_enabled=False)
+    session.mode = "continue"
+    ex, ran, paused = _stepping_executor(session)
+    await asyncio.wait_for(ex.run(_linear_record(), None), 1)  # runs straight through
+    assert ran == ["a", "b", "c"]
+    assert paused.empty()
+
+
+async def test_set_breakpoints_midrun():
+    # Start stepping; at the first pause, ADD a breakpoint on c and Continue → pauses at c.
+    session = DebugSession("cid-bpmid", "t1")
+    ex, ran, paused = _stepping_executor(session)
+    task = asyncio.create_task(ex.run(_linear_record(), None))
+    assert await asyncio.wait_for(paused.get(), 1) == "a"
+    session.set_breakpoints(["c"])
+    session.cont()                                          # runs a, b; pauses at c (new bp)
+    assert await asyncio.wait_for(paused.get(), 1) == "c"
+    assert ran == ["a", "b"]
+    session.cont()
+    await asyncio.wait_for(task, 1)
+    assert ran == ["a", "b", "c"]
+
+
 async def test_non_debug_run_is_unchanged():
     # No DebugSession -> the gate is never awaited; a normal run completes with no pauses.
     ran: list[str] = []
