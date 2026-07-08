@@ -210,7 +210,9 @@ _INITIATOR_SPECS: dict[str, dict[str, Any]] = {
         "id_field": "source_id",
         "list_unwrap": "bindings",
         "payload": lambda uid, p: {
-            "source_id": str(p.get("source") or "").strip(),
+            # The block's config key is ``stream_id`` (blocks.py SttInitiator) — the source id a
+            # web/STT client (and Patron's mic control) POSTs to at ``/sources/<id>/audio``.
+            "source_id": str(p.get("stream_id") or "").strip(),
             "record_uid": uid,
         },
     },

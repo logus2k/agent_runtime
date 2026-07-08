@@ -448,7 +448,9 @@ def test_deploy_web_initiator_binds_http_ingress():
 
 def test_deploy_stt_initiator_binds_stt_ingress():
     client, reg, sched, ingress = _client()
-    comp = _initiator_agent_whatsapp("stt_initiator", {"source": "voice-1"})
+    # The STT source id is carried on the block's `stream_id` property (the /composer/catalog
+    # ConfigField key — blocks.py SttInitiator). Deploy binds source_id from it in stt_ingress.
+    comp = _initiator_agent_whatsapp("stt_initiator", {"stream_id": "voice-1"})
     body = client.post(f"/admin/projects/{PUID}/deploy",
                        json={"name": "Voice", "composition": comp}).json()
     assert body["firing"]["service"] == "stt_ingress"
