@@ -1,0 +1,116 @@
+{
+  "version": "0.1",
+  "uid": "cv-ingest",
+  "name": "CV Ingest",
+  "description": null,
+  "enabled": true,
+  "owner": "logus2k@gmail.com",
+  "owner_email": null,
+  "entry": "file_initiator:1",
+  "nodes": [
+    {
+      "id": "file_initiator:1",
+      "kind": "initiator",
+      "asset_ref": null,
+      "config": {
+        "type": "channel"
+      }
+    },
+    {
+      "id": "ingestion:2",
+      "kind": "ingestion",
+      "asset_ref": null,
+      "config": {
+        "agent_url": "http://ingestion-server:8700",
+        "pipeline": {
+          "corpus": {
+            "context": "a curriculum vitae",
+            "language": "en",
+            "target_db": "cv"
+          },
+          "chunking": {
+            "strategy": "pdf_docling",
+            "target_tokens": 200
+          },
+          "types": {
+            "entities": {
+              "organization": {
+                "definition": "a named company, employer, client, university or certifying body",
+                "examples": [
+                  "Vision-Box",
+                  "ISCTE",
+                  "Microsoft"
+                ]
+              },
+              "role": {
+                "definition": "a job title or position held by the person",
+                "examples": [
+                  "VP Engineering",
+                  "CTO"
+                ]
+              },
+              "technology": {
+                "definition": "a named product, system, standard or certification",
+                "examples": [
+                  "Kubernetes",
+                  "AI-901"
+                ]
+              },
+              "domain": {
+                "definition": "a field, industry or discipline worked in",
+                "examples": [
+                  "biometrics",
+                  "computer vision"
+                ],
+                "not": "a named product or company (that is a technology)"
+              }
+            },
+            "relations": {
+              "AT_ORGANIZATION": {
+                "from": "role",
+                "to": "organization"
+              }
+            }
+          },
+          "steps": [
+            {
+              "tier": "llm",
+              "entities": [
+                "organization",
+                "role",
+                "technology",
+                "domain"
+              ],
+              "relations": [
+                "AT_ORGANIZATION"
+              ]
+            },
+            {
+              "tier": "derived",
+              "relations": [
+                "SIMILAR_TO"
+              ],
+              "threshold": 0.75
+            },
+            {
+              "tier": "communities"
+            }
+          ]
+        },
+        "judge": {
+          "persona": "ingest_judge",
+          "on_suspicion": "notify",
+          "enabled": true
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src": "file_initiator:1",
+      "dst": "ingestion:2",
+      "port": "out",
+      "dst_port": "in"
+    }
+  ]
+}

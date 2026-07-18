@@ -348,6 +348,8 @@ _KIND_MAP: dict[str, str] = {
     # Standalone data-source query blocks (emit results into the flow).
     "vector_query": "vector_query",
     "graph_query": "graph_query",
+    # Ingestion: a client of the Ingestion Agent; writes a corpus + graph.
+    "ingestion": "ingestion",
     "data": "data",  # Data (JSON): emits a literal JSON object as its flow value
     "whatsapp": "destination",
     "tts": "destination",

@@ -42,7 +42,7 @@ _VERSION_RE = re.compile(r"^(\d+)\.(\d+)$")
 # KIND — so this Literal is unchanged: the specific channel/source lives in node config.
 NodeKind = Literal[
     "initiator", "rag", "vector_query", "graph_query", "guardrail", "agent", "destination",
-    "data",
+    "data", "ingestion",
 ]
 
 

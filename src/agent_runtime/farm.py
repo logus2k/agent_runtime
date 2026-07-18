@@ -33,6 +33,30 @@ from .registry import Registry
 
 log = logging.getLogger("agent_runtime.farm")
 
+
+def _graph_timeout(record, default_s: float) -> float:
+    """The whole run's bound, DERIVED from the graph rather than fixed.
+
+    Per-node ``timeout_s`` is the real protection (graph_executor bounds each
+    handler); this is only a backstop against a wedged run. But a fixed global cap
+    silently defeats the per-node one — a node with ``timeout_s: 600`` still dies
+    at the global 120s — so the outer bound is the sum of what the graph's nodes
+    are allowed to take, falling back to the default for nodes that declare none.
+
+    A node runs once per incoming message today (no barrier), so a plain sum is
+    exact for single-visit nodes and a lower bound otherwise. That is fine: this
+    is a sanity cap, not an SLA.
+    """
+    total = 0.0
+    for n in getattr(record, "nodes", None) or []:
+        raw = (getattr(n, "config", None) or {}).get("timeout_s")
+        try:
+            v = float(raw) if raw not in (None, "", 0, "0") else default_s
+        except (TypeError, ValueError):
+            v = default_s
+        total += v if v > 0 else default_s
+    return max(total, default_s)
+
 # A handler runs one resolved agent for one trigger event. The farm owns
 # bus/dispatch/idempotency/ack; the handler owns the pipeline (brain→…→delivery).
 AgentHandler = Callable[["AgentRecordRef", EventEnvelope], Awaitable[None]]
@@ -335,7 +359,8 @@ class Farm:
                         await self._graph_handler(graph_record, env)
                     else:
                         await asyncio.wait_for(
-                            self._graph_handler(graph_record, env), timeout=s.job_timeout_s
+                            self._graph_handler(graph_record, env),
+                            timeout=_graph_timeout(graph_record, s.job_timeout_s),
                         )
                     log.info("project '%s' completed (cid=%s)", graph_record.name, cid)
                 return  # ack in finally

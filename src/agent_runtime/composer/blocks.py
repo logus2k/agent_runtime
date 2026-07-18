@@ -546,6 +546,30 @@ class FileInitiator(Initiator):
                         label="watch path", default="/watched/in", placeholder="/watched/in"),
             ConfigField("match", "string", control="text", label="match patterns",
                         placeholder="*.pdf, *.txt"),
+            # What travels on the wire. folder_watch seeds the file's CONTENT by
+            # default so an Agent acts on what's IN the file — but its reader
+            # cannot decode a PDF and returns "[binary file …: N bytes, not UTF-8
+            # text]". That marker is useless to every consumer, and silently so.
+            # `path` is what an Ingestion block wants: the Agent reads the bytes
+            # off the shared mount, and base64ing a PDF through the bus to a
+            # service that will do that anyway is pure overhead.
+            ConfigField("emit", "enum", values=["path", "content"], default="path",
+                        control="select", label="output",
+                        placeholder="what to put on the wire"),
+            # Binary + content = base64, not a marker. The bus is Valkey streams —
+            # in-memory, retained, and readable by observers — so a 100MB file is
+            # ~133MB of JSON sitting in the stream. Per-binding rather than a
+            # constant so it can be tuned without a rebuild.
+            ConfigField("max_content_mb", "integer", control="number", default=64,
+                        min=1, max=512, label="max content size (MB)",
+                        show_if={"emit": "content"},
+                        placeholder="fail loudly above this, never truncate"),
+            # folder_watch supports this per-binding already; it was simply
+            # unreachable from here. Without it a document can never LEAVE a
+            # corpus: deletes fire nothing and the chunks live forever.
+            ConfigField("on_deleted", "boolean", default=False, control="boolean",
+                        label="fire on delete",
+                        placeholder="also fire when a matching file is removed"),
         ]
 
 
@@ -708,6 +732,154 @@ class GraphDatabase(Block):
         if self.cfg("query"):
             cfg["query"] = self.cfg("query")
         return cfg
+
+
+_DEFAULT_PIPELINE = """\
+{
+  "corpus": {
+    "context": "a curriculum vitae",
+    "language": "en",
+    "target_db": "cv"
+  },
+  "chunking": { "strategy": "pdf_docling", "target_tokens": 200 },
+  "types": {
+    "entities": {
+      "organization": {
+        "definition": "a named company, employer, client, university or certifying body",
+        "examples": ["Acme Corp", "ISCTE"]
+      },
+      "role": {
+        "definition": "a job title or position held by the person",
+        "examples": ["Senior Engineer", "CTO"]
+      },
+      "technology": {
+        "definition": "a named product, system, standard or certification",
+        "examples": ["PostgreSQL", "AI-901"]
+      },
+      "domain": {
+        "definition": "a field, industry or discipline worked in",
+        "examples": ["cybersecurity", "biometrics"],
+        "not": "a named product or company (that is a technology)"
+      }
+    },
+    "relations": {
+      "AT_ORGANIZATION": { "from": "role", "to": "organization" }
+    }
+  },
+  "steps": [
+    { "tier": "llm",
+      "entities": ["organization", "role", "technology", "domain"],
+      "relations": ["AT_ORGANIZATION"] },
+    { "tier": "derived", "relations": ["SIMILAR_TO"], "threshold": 0.75 }
+  ]
+}"""
+
+
+class Ingestion(Block):
+    """Ingestion: turn a document into a searchable corpus + a knowledge graph.
+
+    A CLIENT of the Ingestion Agent (``ingestion_server``) — this block holds no
+    ingestion logic. Same pattern as ``brain``→agent_server and ``tools``→MCP: the
+    runtime holds a reference, the code lives in the service that owns it.
+
+    Wire a File Initiator into it (``emit: path``) and it ingests whatever lands in
+    the watched folder; on a delete it removes that document from the corpus
+    instead. The Agent decides which from the event's ``change``.
+
+    The pipeline is INLINE and self-contained — the corpus context, the entity /
+    relation vocabulary and the ordered layers all travel with the run, so the
+    Agent stores nothing and this block is the whole configuration.
+    """
+
+    kind = "ingestion"
+    category = "Block"
+    label = "Ingestion"
+
+    def get_schema(self) -> BlockSchema:
+        return BlockSchema(
+            kind=self.kind,
+            category=self.category,
+            label=self.label,
+            # in: the document (a path, from a File Initiator with emit=path).
+            # out: the finished run as JSON. DataSchema has no `array` type, so a
+            # run's reports[] travel as JSON-in-a-STRING rather than a typed object.
+            ports=[Port("in", "in", STRING), Port("out", "out", STRING)],
+            config=[
+                ConfigField("agent_url", "string", control="text",
+                            label="ingestion agent",
+                            default="http://ingestion-server:8700",
+                            placeholder="http://ingestion-server:8700"),
+                # The whole declarative pipeline. `default` IS the base pipeline: a
+                # freshly-dropped block arrives working and editable, the way
+                # Branch.branches ships a default list.
+                ConfigField("pipeline", "json", required=True, control="json",
+                            label="pipeline", default=_DEFAULT_PIPELINE,
+                            placeholder="the declarative pipeline (corpus, types, steps)"),
+                # The judge is BLOCK-level: it watches the pipeline, so it sits
+                # outside it. Dual shape — pick a preset OR write an instruction —
+                # mirroring the Agent's own judge (loop_judge_persona +
+                # loop_judge_template), which is what makes "use an existing prompt
+                # or author a new one" work without a preset-creation API.
+                ConfigField("judge_persona", "preset", control="resource-ref",
+                            label="judge", default="ingest_judge",
+                            placeholder="agent_server preset that monitors each layer"),
+                ConfigField("judge_template", "string", control="template",
+                            label="judge instruction (blank = the preset's default)",
+                            placeholder="what a suspicious outcome looks like for this corpus"),
+                ConfigField("on_suspicion", "enum", values=["notify", "suspend"],
+                            default="notify", control="select", label="on suspicion",
+                            placeholder="notify the bus, or halt for a human decision"),
+                ConfigField("judge_enabled", "boolean", default=True,
+                            control="boolean", label="judge enabled"),
+            ],
+        )
+
+    def validate(self) -> list[str]:
+        errors = super().validate()
+        raw = self.cfg("pipeline")
+        if not raw:
+            return errors
+        try:
+            p = _json_obj(raw, where="pipeline")
+        except ValueError as e:
+            errors.append(f"{self.label}: {e}")
+            return errors
+        # Catch at DEPLOY time what would otherwise fail minutes into a run.
+        corpus = p.get("corpus") or {}
+        if not corpus.get("target_db"):
+            errors.append(f"{self.label}: pipeline.corpus.target_db is required "
+                          f"(one pipeline = one corpus = one graph namespace)")
+        if not corpus.get("context"):
+            errors.append(f"{self.label}: pipeline.corpus.context is required — it is "
+                          f"what tells the generic extractor what kind of document this is")
+        declared = set((p.get("types") or {}).get("entities") or {})
+        if not declared:
+            errors.append(f"{self.label}: pipeline.types.entities is empty — "
+                          f"nothing would be extracted")
+        for i, step in enumerate(p.get("steps") or []):
+            for e in step.get("entities") or []:
+                if e not in declared:
+                    errors.append(f"{self.label}: pipeline.steps[{i}] wants entity type "
+                                  f"'{e}', which types.entities does not declare")
+        if not (p.get("steps") or []):
+            errors.append(f"{self.label}: pipeline.steps is empty — it would only "
+                          f"write chunks, with no graph")
+        return errors
+
+    def lower(self) -> dict[str, Any]:
+        frag: dict[str, Any] = {
+            "agent_url": self.cfg("agent_url", "http://ingestion-server:8700"),
+            "pipeline": _json_obj(self.cfg("pipeline", "{}"), where="pipeline"),
+        }
+        judge: dict[str, Any] = {
+            "persona": self.cfg("judge_persona", "ingest_judge"),
+            "on_suspicion": self.cfg("on_suspicion", "notify"),
+            "enabled": bool(self.cfg("judge_enabled", True)),
+        }
+        if self.cfg("judge_template"):
+            judge["template"] = self.cfg("judge_template")
+        frag["judge"] = judge
+        return frag
 
 
 # Per-format inline-content example placeholders (shown in the editor when a format is chosen).

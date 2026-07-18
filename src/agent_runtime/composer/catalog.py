@@ -27,6 +27,7 @@ from .blocks import (
     FileDestination,
     FileInitiator,
     GraphDatabase,
+    Ingestion,
     Loop,
     SttInitiator,
     TTS,
@@ -50,6 +51,8 @@ BLOCK_TYPES: dict[str, type[Block]] = {
     # Standalone data-source blocks (§ retriever): query a vector/graph DB, emit results.
     VectorDatabase.kind: VectorDatabase,
     GraphDatabase.kind: GraphDatabase,
+    # Ingestion: a client of the Ingestion Agent (ingestion_server).
+    Ingestion.kind: Ingestion,
     # Data (JSON): emit a literal JSON object → an Agent's `vars` port (or a general flow source).
     DataSource.kind: DataSource,
     # New boundary SOURCES (§9.3.1) — out-only initiators, inert in graph execution.

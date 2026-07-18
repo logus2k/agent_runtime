@@ -525,6 +525,28 @@ class Runner:
                 d["incoming"] = _preview(d["incoming"])
             await emit_for(None, event_type, d)
 
+        async def h_ingestion(node: GraphNode, value, ctx: WalkContext):
+            # Ingestion block: hand the document to the Ingestion Agent and WAIT, so
+            # the next activity sees a real outcome rather than a run id.
+            #
+            # The document comes from the fired event's CONTEXT, not from `value`:
+            # folder_watch seeds the file's *content*, which for a PDF is a marker
+            # string, and on a delete there is nothing to read at all. Only
+            # context.change distinguishes an ingest from a removal.
+            from .nodes.ingestion import run_ingestion, summarise
+
+            fired_ctx = ctx.scratch.get("event_context") or {}
+            timeout_s = float((node.config or {}).get("timeout_s") or 0) or 0.0
+            run = await run_ingestion(node.config or {}, value, fired_ctx, timeout_s)
+            out = summarise(run)
+            await self._emit(cid, "ingestion.ran", {"node": node.id, **out})
+            if out["state"] not in ("completed",):
+                # A stale corpus that reports success is the failure this whole
+                # thing exists to prevent — surface it loudly on the flow.
+                log.warning("ingestion node '%s': run %s ended %s",
+                            node.id, out.get("run_id"), out["state"])
+            return json.dumps(out, ensure_ascii=False)
+
         handlers = {
             "initiator": h_initiator,
             "rag": h_rag,
@@ -534,8 +556,14 @@ class Runner:
             "agent": h_agent,
             "guardrail": h_guardrail,
             "destination": h_destination,
+            "ingestion": h_ingestion,
         }
         walk_ctx = WalkContext(cid=cid, sender=self._settings.sender_id)
+        # The fired event's provenance, for nodes that need more than the seed. The
+        # File Initiator puts `file_path` and `change` here; an Ingestion node cannot
+        # work without them (a PDF's seed is a marker string, and a delete has no
+        # content at all).
+        walk_ctx.scratch["event_context"] = dict(env.payload.context or {})
         # Pre-evaluate every Data (JSON) node ONCE into ctx.scratch["data_out"] — its value is
         # order-independent, so an Agent can PULL its `vars` from a Data node no matter when (or
         # whether) that node runs on the flow path. Data nodes with NO incoming edge are pure

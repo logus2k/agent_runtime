@@ -187,6 +187,13 @@ _INITIATOR_SPECS: dict[str, dict[str, Any]] = {
             "path": str(p.get("watch_path") or "").strip(),
             "patterns": _split_patterns(p.get("patterns")),
             "name": (str(p.get("name")).strip() or None) if p.get("name") else None,
+            # What the fired event carries, and whether removals fire at all.
+            # These are pure plumbing: folder_watch already supports on_deleted
+            # per-binding, it was simply unreachable from the editor — so a
+            # document could never LEAVE a corpus.
+            "emit": str(p.get("emit") or "path").strip() or "path",
+            "max_content_mb": int(p.get("max_content_mb") or 64),
+            "on_deleted": bool(p.get("on_deleted", False)),
         },
     },
     "web_initiator": {

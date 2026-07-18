@@ -19,12 +19,31 @@ spin forever — loud, never a silent hang).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from .dsl_graph import GraphNode, GraphRecord
+
+
+def _node_timeout(node: GraphNode) -> Optional[float]:
+    """This node's own bound, in seconds. None disables it.
+
+    Read off the node's config rather than a block import so the executor stays
+    independent of the composer. Junk (a string, a negative) disables rather than
+    crashes a run — a bad timeout must not be worse than no timeout.
+    """
+    raw = (node.config or {}).get("timeout_s")
+    if raw in (None, "", 0, "0"):
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        log.warning("node '%s': ignoring non-numeric timeout_s=%r", node.id, raw)
+        return None
+    return v if v > 0 else None
 
 if TYPE_CHECKING:
     from .debug import DebugSession, PauseEmit
@@ -122,7 +141,23 @@ class GraphWorkflowExecutor:
 
             # Run this node ONCE for THIS incoming message (per-message fan-in: no
             # barrier — a node with two incoming edges is visited twice and runs twice).
-            out_value = await handler(node, msg.value, ctx)
+            #
+            # Bounded per node. The farm's job_timeout_s is global and wraps the WHOLE
+            # run, so a block that legitimately takes minutes (an ingest is ~100s per
+            # document) is killed at the global default and its message acked anyway —
+            # work abandoned, no retry, no terminal event. `timeout_s` is declared once
+            # on BlockSchema, so every block carries it (schema.py TIMEOUT_FIELD).
+            timeout = _node_timeout(node)
+            try:
+                if timeout:
+                    out_value = await asyncio.wait_for(
+                        handler(node, msg.value, ctx), timeout=timeout)
+                else:
+                    out_value = await handler(node, msg.value, ctx)
+            except asyncio.TimeoutError:
+                raise GraphExecutionError(
+                    f"node '{node.id}' ({node.kind}) exceeded its timeout_s={timeout}s"
+                ) from None
             run_counts[node.id] = run_counts.get(node.id, 0) + 1
 
             # A `vars` edge is a PULL input (the destination reads it from ctx.scratch when it

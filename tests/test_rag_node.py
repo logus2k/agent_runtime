@@ -45,12 +45,23 @@ def test_build_evidence_empty_when_nothing():
 
 # --- retrieve_and_inject ----------------------------------------------------
 
+# The migrated backend: embeddings-server /embed + ArcadeDB /api/v1/query/<db>
+# + embeddings-server /v1/rerank. These mocks stand in for that fleet.
+def _embed_resp() -> httpx.Response:
+    return httpx.Response(200, json={"vectors": [[0.1] * 8],
+                                     "sparse": [{"indices": [1], "weights": [0.5]}]})
+
+
 async def test_injects_retrieved_context():
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/search":
-            return httpx.Response(
-                200, json={"chunks": [{"source_path": "s.md", "text": "Injected fact."}]}
-            )
+        path = request.url.path
+        if path.endswith("/embed"):
+            return _embed_resp()
+        if "/api/v1/query/" in path:   # ArcadeDB hybrid search over Chunk
+            return httpx.Response(200, json={"result": [
+                {"id": "cv#0", "text": "Injected fact.", "source_path": "s.md"}]})
+        if path.endswith("/v1/rerank"):
+            return httpx.Response(200, json={"results": [{"index": 0, "relevance_score": 0.9}]})
         raise AssertionError(f"unexpected call: {request.url}")
 
     rag = Rag(domains=["cv"], use_graph=False)  # no rewriter -> raw query
@@ -66,14 +77,20 @@ async def test_uses_graph_when_enabled():
     seen = {"search": False, "graph": False}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/search":
+        path = request.url.path
+        if path.endswith("/embed"):
+            return _embed_resp()
+        if path.endswith("/v1/rerank"):
+            return httpx.Response(200, json={"results": []})
+        if "/api/v1/query/" in path:
+            # The graph query selects Entity vertices; the corpus query selects Chunk.
+            body = request.content.decode()
+            if "Entity" in body:
+                seen["graph"] = True
+                return httpx.Response(200, json={"result": [
+                    {"id": "e1", "label": "Node", "type": "x", "properties_json": "{}"}]})
             seen["search"] = True
-            return httpx.Response(200, json={"chunks": []})
-        if "/retrieve" in request.url.path:
-            seen["graph"] = True
-            return httpx.Response(
-                200, json={"entities": [{"id": "e1", "label": "Node", "type": "x"}], "edges": []}
-            )
+            return httpx.Response(200, json={"result": []})
         raise AssertionError(f"unexpected: {request.url}")
 
     rag = Rag(domains=["kb"], use_graph=True)

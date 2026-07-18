@@ -97,15 +97,22 @@ class Settings:
     # agent_runtime's compose must join that network to resolve this name.
     mcp_server_key: str = _str("MCP_SERVER_KEY", "mcp")
     mcp_url: str = _str("MCP_URL", "http://mcp-service:8080/mcp/")
-    # RAG retrieval backends (block_management.md §8.1) — the dense corpus (noted-rag)
-    # and the knowledge graph (noted-graph), reused via retrieve-then-inject like
-    # cv/backend. Reachable on noted-network. A down backend degrades to pass-through.
-    noted_rag_url: str = _str("NOTED_RAG_URL", "http://noted-rag:8200")
-    noted_graph_url: str = _str("NOTED_GRAPH_URL", "http://noted-graph:5523")
+    # RAG retrieval backends (block_management.md §8.1). Migrated OFF the noted stack
+    # onto the consolidated fleet — the same backends cv/backend and bulário use:
+    # graph-server-arcadedb (one instance, one database per corpus, `Chunk` +
+    # `Entity`/`RELATES` types with LSM_VECTOR/LSM_SPARSE_VECTOR indexes) and
+    # embeddings-server (bge-m3 dense+sparse, bge-reranker). A `domain` is an
+    # ArcadeDB database name. A down backend degrades to pass-through.
+    arcadedb_url: str = _str("ARCADEDB_URL", "http://graph-server-arcadedb:2480")
+    arcadedb_user: str = _str("ARCADEDB_USER", "root")
+    arcadedb_password: str = _str("ARCADEDB_PASSWORD", "poc-dev-pass")
+    embed_url: str = _str("EMBED_URL", "http://embeddings-server:8600")
+    rerank_url: str = _str("RERANK_URL", "http://embeddings-server:8600")
+    rerank_model: str = _str("RERANK_MODEL", "bge-reranker")
+    # Candidates pulled from ANN before the cross-encoder rerank trims to top_k.
+    rag_arcade_candidates: int = _int("RAG_ARCADE_CANDIDATES", 20)
     rag_top_k: int = _int("RAG_TOP_K", 10)
-    # noted-rag reranks and filters by min score; it must be passed or the reranker's
-    # default threshold drops EVERY chunk (0 results even on a populated corpus). Matches
-    # cv/backend's CV_RERANK_MIN_SCORE convention (0.0 = keep all reranked hits).
+    # Keep-all-reranked-hits floor (0.0). Matches cv/backend's CV_RERANK_MIN_SCORE.
     rag_rerank_min_score: float = float(_str("RAG_RERANK_MIN_SCORE", "0.0"))
     whatsapp_bridge_url: str = _str("WHATSAPP_BRIDGE_URL", "http://whatsapp-bridge:3399")
     whatsapp_agent_name: str = _str("WHATSAPP_AGENT_NAME", "news-agent")

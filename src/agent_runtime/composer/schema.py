@@ -155,6 +155,23 @@ class ConfigField:
         return out
 
 
+# Every block gets this, declared once, here. The catalog serializes it (so it
+# renders in every panel with no JS change), ``Block.validate()`` walks
+# ``get_schema().config`` (so it validates for free), and the executor reads it
+# off the node's config to bound that node's handler.
+#
+# It exists because the farm's ``job_timeout_s`` is GLOBAL and wraps the whole
+# graph run (farm.py, ``asyncio.wait_for(self._graph_handler(...))``). A node
+# that legitimately takes minutes — an ingest is ~100s per document — is killed
+# at the default 120s and the message is acked anyway, so the work is abandoned
+# with no retry and no terminal event. A per-node bound is the honest fix.
+TIMEOUT_FIELD = ConfigField(
+    "timeout_s", "integer", control="number", default=120,
+    label="timeout (s)", min=1, max=86400,
+    placeholder="seconds this block may run before it is cancelled",
+)
+
+
 @dataclass(frozen=True)
 class BlockSchema:
     """Exactly what ``Block.get_schema()`` returns — the block's full contract.
@@ -168,6 +185,17 @@ class BlockSchema:
     label: str
     ports: list[Port] = field(default_factory=list)
     config: list[ConfigField] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """Append the common fields every block carries.
+
+        Done here rather than in each ``get_schema()`` so a new block cannot
+        forget one, and so ``timeout_s`` renders + validates + lowers with zero
+        per-block code. A block that declares its own ``timeout_s`` (a different
+        default, say) wins — this only fills the gap.
+        """
+        if not any(c.key == TIMEOUT_FIELD.key for c in self.config):
+            object.__setattr__(self, "config", list(self.config) + [TIMEOUT_FIELD])
 
     def port(self, direction: Direction) -> Optional[Port]:
         """The single flow port in a direction (the model uses one in / one out)."""
