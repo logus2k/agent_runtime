@@ -28,6 +28,7 @@
             "language": "en",
             "target_db": "cv"
           },
+          "merge_cross_type": true,
           "chunking": {
             "strategy": "pdf_docling",
             "target_tokens": 200
