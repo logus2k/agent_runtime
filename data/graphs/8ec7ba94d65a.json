@@ -1,0 +1,57 @@
+{
+  "version": "0.3",
+  "uid": "8ec7ba94d65a",
+  "name": "Real Estate News",
+  "description": null,
+  "enabled": true,
+  "owner": "103189083840167031872",
+  "owner_email": "logus2k@gmail.com",
+  "entry": "console_send:3",
+  "nodes": [
+    {
+      "id": "console_send:3",
+      "kind": "initiator",
+      "asset_ref": null,
+      "config": {
+        "type": "channel"
+      }
+    },
+    {
+      "id": "console_receive:2",
+      "kind": "destination",
+      "asset_ref": null,
+      "config": {
+        "channel": "console",
+        "target": ""
+      }
+    },
+    {
+      "id": "mcp:1",
+      "kind": "mcp",
+      "asset_ref": null,
+      "config": {
+        "tool": "mcp__web_search",
+        "server": "mcp",
+        "arguments": {
+          "query": "real estate news in Portugal",
+          "max_results": 5
+        },
+        "result_format": "text"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src": "mcp:1",
+      "dst": "console_receive:2",
+      "port": "out",
+      "dst_port": "in"
+    },
+    {
+      "src": "console_send:3",
+      "dst": "mcp:1",
+      "port": "out",
+      "dst_port": "in"
+    }
+  ]
+}

@@ -363,6 +363,101 @@ class Runner:
                               "query": query[:200], "hit": bool(out)})
             return out
 
+        async def h_mcp(node: GraphNode, value, ctx: WalkContext):
+            # MCP block: ONE tool call, deterministically — no LLM decides anything here.
+            # (An Agent reaches tools by reasoning; that is the wrong instrument when the
+            # call is not a judgment — fetching a build history, computing a metric,
+            # reading/writing state.)
+            #
+            # The tool's namespaced name IS the address: `<server>__<tool>` selects which
+            # configured MCP host to call, so there is no second field to keep in sync.
+            # Arguments are rendered against the SAME variables an Agent template sees —
+            # static/wired vars < {input} < the firing payload's vars — so one node can
+            # serve many firings (e.g. {"project": "{project}"}).
+            from .mcp_servers import all_servers  # env defaults + runtime-registered
+
+            cfg = node.config or {}
+            tool = str(cfg.get("tool") or "").strip()
+            if not tool:
+                raise RuntimeError(f"mcp node '{node.id}' has no tool configured")
+            prefix, sep, _raw = tool.partition("__")
+            if not sep or not prefix:
+                raise RuntimeError(
+                    f"mcp node '{node.id}': tool '{tool}' is not namespaced as "
+                    "'<server>__<tool>' (the prefix selects the MCP host)"
+                )
+            # The explicit `server` field wins when set; otherwise the tool's prefix is
+            # the address. They must agree — a silent mismatch would call the wrong host.
+            chosen = str(cfg.get("server") or "").strip()
+            if chosen and chosen != prefix:
+                raise RuntimeError(
+                    f"mcp node '{node.id}': server '{chosen}' does not match tool "
+                    f"'{tool}' (prefix '{prefix}') — pick a tool from that server"
+                )
+            server_key = chosen or prefix
+            servers = all_servers()
+            url = servers.get(server_key)
+            if url is None:
+                raise RuntimeError(
+                    f"mcp node '{node.id}': unknown MCP server '{server_key}' "
+                    f"(known: {sorted(servers)})"
+                )
+
+            # PULL vars from any Data (JSON) block wired to this node's `vars` port —
+            # identical precedence to h_agent so the two behave the same way.
+            data_out = ctx.scratch.get("data_out", {})
+            node_vars: dict = {}
+            for e in record.in_edges(node.id, dst_port="vars"):
+                v = data_out.get(e.src)
+                if isinstance(v, dict):
+                    node_vars.update(v)
+            merged = {**node_vars, "input": "" if value is None else str(value), **overrides}
+
+            def _render(obj):
+                """Format every string leaf against `merged`; other types pass through.
+                A missing placeholder is loud — a silently-empty argument would produce a
+                wrong tool call rather than a failed one."""
+                if isinstance(obj, str):
+                    try:
+                        return obj.format(**merged)
+                    except KeyError as exc:
+                        raise RuntimeError(
+                            f"mcp node '{node.id}' argument references missing var {exc}"
+                        ) from exc
+                if isinstance(obj, dict):
+                    return {k: _render(v) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [_render(v) for v in obj]
+                return obj
+
+            raw_args = cfg.get("arguments") or {}
+            if isinstance(raw_args, str):
+                raw_args = json.loads(raw_args) if raw_args.strip() else {}
+            if not isinstance(raw_args, dict):
+                raise RuntimeError(f"mcp node '{node.id}': arguments must be a JSON object")
+            args = _render(raw_args)
+
+            await self._emit(cid, "tool.exec",
+                             {"node": node.id, "name": tool, "server": server_key, "args": args})
+            client = MCPClient(url, server=server_key)
+            text = await client.call(tool, args)
+
+            out: Any = text
+            if str(cfg.get("result_format") or "text") == "json":
+                try:
+                    out = json.loads(text)
+                except ValueError as exc:
+                    # Loud: the author asked for JSON, so a non-JSON result is a real
+                    # contract break, not something to paper over with the raw string.
+                    raise RuntimeError(
+                        f"mcp node '{node.id}': tool '{tool}' result is not valid JSON "
+                        f"({exc}); set result_format=text to pass it through"
+                    ) from exc
+            await self._emit(cid, "tool.result",
+                             {"node": node.id, "name": tool, "server": server_key,
+                              "result": text[:2000]})
+            return out
+
         async def h_data(node: GraphNode, value, ctx: WalkContext):
             # Data source block: load a value in one of many formats (object/tabular/document)
             # and emit it as the flow value (a general flow source). `source=inline` parses the
@@ -552,6 +647,7 @@ class Runner:
             "rag": h_rag,
             "vector_query": h_vector_query,
             "graph_query": h_graph_query,
+            "mcp": h_mcp,
             "data": h_data,
             "agent": h_agent,
             "guardrail": h_guardrail,

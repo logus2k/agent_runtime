@@ -29,6 +29,11 @@ async def list_items(desc: ResourceDescriptor, request: Request) -> dict[str, An
             d = await _fetch_mcp_tools()
             return {"ok": bool(d.get("server_ok")), "items": d.get("tools", []), "error": d.get("error")}
 
+        if src == "mcp_server":  # MCP hosts: env defaults + runtime-registered
+            from ..mcp_servers import items as mcp_server_items
+
+            return {"ok": True, "items": mcp_server_items(), "error": None}
+
         if src == "agent_server":
             from ..admin import _fetch_presets
             d = await _fetch_presets()
@@ -81,6 +86,18 @@ async def act_item(desc: ResourceDescriptor, request: Request, key: str, verb: s
     has already gated the verb against the descriptor's capabilities/actions."""
     src = desc.source
     try:
+        if src == "mcp_server":
+            if verb != "delete":
+                return {"ok": False, "error": f"mcp-server has no action '{verb}'"}
+            from ..mcp_servers import ServerError, delete as delete_server
+
+            try:
+                removed = delete_server(key)
+            except ServerError as exc:  # env-declared host, or a bad key
+                return {"ok": False, "status": 409, "error": str(exc)}
+            return {"ok": removed, "status": 204 if removed else 404,
+                    "error": None if removed else f"no such server '{key}'"}
+
         if src == "scheduler":  # trigger jobs
             base = f"{settings.scheduler_url.rstrip('/')}/jobs/{key}"
             method, url = ("DELETE", base) if verb == "delete" else ("POST", f"{base}/{verb}")
@@ -110,6 +127,19 @@ async def update_item(desc: ResourceDescriptor, request: Request, key: str, body
     body = body or {}
     src = desc.source
     try:
+        if src == "mcp_server":
+            # PUT /resources/mcp-server/<key> is an UPSERT: the key comes from the path, so
+            # the same call both creates a new host and repoints an existing one (idempotent,
+            # which is what PUT means). This is how "add a server" works without a separate
+            # create route.
+            from ..mcp_servers import ServerError, put as put_server
+
+            try:
+                rec = put_server(str(body.get("key") or key), str(body.get("url") or ""))
+            except ServerError as exc:
+                return {"ok": False, "status": 422, "error": str(exc)}
+            return {"ok": True, "status": 200, "error": None, "item": rec}
+
         if src == "scheduler":  # edit an existing job's schedule (cron/timezone)
             ta: dict[str, Any] = {"cron_expression": str(body.get("cron", "")).strip()}
             tz = str(body.get("timezone", "")).strip()

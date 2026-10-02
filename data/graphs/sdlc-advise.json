@@ -1,0 +1,25 @@
+{
+  "version": "0.1",
+  "uid": "sdlc-advise",
+  "name": "SDLC advise",
+  "description": "Reads a project's whole assessed position and ranks what to do next: gap x leverage, damped by low confidence, each proposal blocked-by a specific unmet condition and cited to the knowledge base's own anchor for the target level. Fired after the cell assessments, so it advises on fresh evidence.",
+  "enabled": true,
+  "entry": "trigger:1",
+  "nodes": [
+    { "id": "trigger:1", "kind": "initiator", "config": { "type": "schedule" } },
+    {
+      "id": "advise:2",
+      "kind": "mcp",
+      "config": {
+        "server": "sdlc",
+        "tool": "sdlc__sdlc_advise",
+        "arguments": { "project": "{project}", "top": 5, "write_inbox": true },
+        "result_format": "text",
+        "timeout_s": 120
+      }
+    }
+  ],
+  "edges": [ { "src": "trigger:1", "dst": "advise:2", "port": "out" } ],
+  "owner": "103189083840167031872",
+  "owner_email": "logus2k@gmail.com"
+}

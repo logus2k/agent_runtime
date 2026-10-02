@@ -1,5 +1,5 @@
 {
-  "version": "0.1",
+  "version": "0.3",
   "uid": "a740641e4d0a",
   "name": "News Agent",
   "description": null,
@@ -8,14 +8,6 @@
   "owner_email": "logus2k@gmail.com",
   "entry": "trigger:1",
   "nodes": [
-    {
-      "id": "trigger:1",
-      "kind": "initiator",
-      "asset_ref": "ai-morning-news",
-      "config": {
-        "type": "schedule"
-      }
-    },
     {
       "id": "agent:2",
       "kind": "agent",
@@ -65,8 +57,15 @@
       "asset_ref": "120363427427912302@g.us",
       "config": {
         "channel": "whatsapp",
-        "target": "120363427427912302@g.us",
-        "target_name": "L2K Chat"
+        "target": "120363427427912302@g.us"
+      }
+    },
+    {
+      "id": "trigger:1",
+      "kind": "initiator",
+      "asset_ref": "ai-morning-news",
+      "config": {
+        "type": "schedule"
       }
     }
   ],

@@ -734,6 +734,101 @@ class GraphDatabase(Block):
         return cfg
 
 
+class MCP(Block):
+    """Call ONE MCP tool **deterministically** — no LLM in the loop.
+
+    An Agent reaches tools by *reasoning* (it decides which of its allow-listed tools
+    to call). That is the wrong instrument when the call is not a judgment: fetching a
+    build history, computing a metric, reading or writing state. This block makes a
+    tool call a plain, repeatable graph step.
+
+    The tool is picked from the live catalogue (``mcp-tool-single``, grouped by host),
+    and its **namespaced name carries the server** (``<server>__<tool>``), so the
+    runtime resolves which host to call from the name alone — no second field to keep
+    in sync. ``arguments`` is a JSON object whose string values are rendered against
+    the usual variables (static ``input.vars`` < wired vars < ``{input}`` < the firing
+    payload's ``vars``), so a node can be reused across firings: ``{"project":
+    "{project}"}``.
+    """
+
+    kind = "mcp"
+    category = "Block"
+    label = "MCP Server"
+
+    def get_schema(self) -> BlockSchema:
+        return BlockSchema(
+            kind=self.kind,
+            category=self.category,
+            label=self.label,
+            ports=[Port("in", "in", ANY), Port("out", "out", ANY)],
+            config=[
+                ConfigField("server", "mcp-server", control="resource-ref", label="server",
+                            default_first=True,
+                            placeholder="which MCP host (add hosts in the Resource Manager)"),
+                # Scoped to the chosen server; the picker's search box overrides the scope
+                # and matches across every host, reverting when the search is cleared.
+                ConfigField("tool", "mcp-tool-single", required=True, control="resource-ref",
+                            label="tool",
+                            scope_by={"field": "server", "item": "server"},
+                            # Picking a tool seeds the arguments with its own parameters,
+                            # so the author is never staring at an empty object.
+                            fills_template={"field": "arguments", "from": "input_schema"},
+                            placeholder="pick a tool (search matches all servers)"),
+                ConfigField("arguments", "json", control="json", label="arguments",
+                            # Shows the selected tool's parameter contract beneath the field.
+                            schema_hint={"field": "tool", "item": "input_schema"},
+                            placeholder='{"project": "{project}", "cell": "{cell}"}'),
+                ConfigField("result_format", "enum", values=["text", "json"], default="text",
+                            control="select", label="result format",
+                            placeholder="parse the tool result as JSON, or pass the raw text"),
+            ],
+        )
+
+    def validate(self) -> list[str]:
+        """Beyond the required-field check: the tool must be namespaced (that prefix is
+        how the server is resolved) and ``arguments`` must be a JSON **object**."""
+        errors = super().validate()
+        tool = str(self.cfg("tool") or "").strip()
+        server = str(self.cfg("server") or "").strip()
+        if tool and "__" not in tool:
+            errors.append(
+                f"{self.label}: tool '{tool}' must be namespaced as '<server>__<tool>' "
+                "(the prefix selects which MCP host to call)"
+            )
+        elif tool and server and tool.split("__", 1)[0] != server:
+            # Caught at author time rather than at run time: a mismatch would otherwise
+            # silently call a different host than the one selected.
+            errors.append(
+                f"{self.label}: server '{server}' does not match tool '{tool}' — "
+                "pick a tool belonging to that server"
+            )
+        args = self.cfg("arguments")
+        if args not in (None, "", {}):
+            try:
+                parsed = json.loads(args) if isinstance(args, str) else args
+            except ValueError as exc:
+                errors.append(f"{self.label} arguments: invalid JSON ({exc})")
+            else:
+                if not isinstance(parsed, dict):
+                    errors.append(f"{self.label} arguments: must be a JSON object")
+        return errors
+
+    def lower(self) -> dict[str, Any]:
+        cfg: dict[str, Any] = {"tool": str(self.cfg("tool", "") or "").strip()}
+        if self.cfg("server"):
+            cfg["server"] = str(self.cfg("server")).strip()
+        args = self.cfg("arguments")
+        if isinstance(args, str) and args.strip():
+            try:
+                args = json.loads(args)
+            except ValueError:
+                args = {}   # validate() already reported it; never crash the deploy
+        cfg["arguments"] = args if isinstance(args, dict) else {}
+        if self.cfg("result_format"):
+            cfg["result_format"] = str(self.cfg("result_format"))
+        return cfg
+
+
 _DEFAULT_PIPELINE = """\
 {
   "corpus": {

@@ -27,6 +27,10 @@ services:
       # data/agents: the host dir is the source of truth so a Deploy survives a restart
       # and the scheduler firing-binding never points at a lost record_uid.
       - ./data/graphs:/app/data/graphs
+      # Runtime-registered MCP hosts (one JSON per key). Same rationale as the two above:
+      # a host added from the Resource Manager is data, not image content, so it must live
+      # on the host to survive a rebuild.
+      - ./data/mcp_servers:/app/data/mcp_servers
       # Shared file-workflow workspace: the SAME host dir folder_watch watches, so a File
       # Initiator reads /watched/in and a File Destination writes /watched/out — one folder
       # on the host (folder_watch/watched/{in,out}) visible to both services.

@@ -68,7 +68,10 @@ class Settings:
     reaper_min_idle_ms: int = _int("REAPER_MIN_IDLE_MS", 30000)
 
     # --- Dispatch bounds (never oversubscribe the shared brain) ---
-    max_concurrency: int = _int("MAX_CONCURRENCY", 4)  # ~ agent_server slot count
+    # MUST track the inference server's parallel slot count (llama.cpp `--parallel`).
+    # Exceeding it does not add throughput — the extra runs simply block on a slot,
+    # which shows up as long, confusing per-node times rather than as an error.
+    max_concurrency: int = _int("MAX_CONCURRENCY", 2)
     job_timeout_s: int = _int("JOB_TIMEOUT_S", 120)
     # Step-by-step debug: auto-stop a paused run abandoned this long (documents/debug_specification.md).
     debug_idle_timeout_s: int = _int("DEBUG_IDLE_TIMEOUT_S", 300)
@@ -97,6 +100,17 @@ class Settings:
     # agent_runtime's compose must join that network to resolve this name.
     mcp_server_key: str = _str("MCP_SERVER_KEY", "mcp")
     mcp_url: str = _str("MCP_URL", "http://mcp-service:8080/mcp/")
+    # ADDITIONAL MCP hosts beyond the default (mcp_server_key -> mcp_url) pair above.
+    # Format: "key=url,key2=url2". A tool is addressed by its namespaced name
+    # (``<key>__<tool>``), so the server is derivable from the tool name alone — which
+    # is how the MCP block resolves which host to call. Empty = the single default host
+    # (unchanged behaviour).
+    mcp_servers_extra: str = _str("MCP_SERVERS", "")
+    # Runtime-registered MCP hosts: one JSON per key (``<key>.json`` -> {key, url}), the
+    # same file-per-entity idiom as data/agents and data/graphs, so a host added from the
+    # Resource Manager survives a restart. Merged ON TOP of the env-declared hosts above
+    # (env = immutable deployment defaults; this dir = what operators add at runtime).
+    mcp_servers_dir: str = _str("MCP_SERVERS_DIR", "data/mcp_servers")
     # RAG retrieval backends (block_management.md §8.1). Migrated OFF the noted stack
     # onto the consolidated fleet — the same backends cv/backend and bulário use:
     # graph-server-arcadedb (one instance, one database per corpus, `Chunk` +
@@ -105,7 +119,7 @@ class Settings:
     # ArcadeDB database name. A down backend degrades to pass-through.
     arcadedb_url: str = _str("ARCADEDB_URL", "http://graph-server-arcadedb:2480")
     arcadedb_user: str = _str("ARCADEDB_USER", "root")
-    arcadedb_password: str = _str("ARCADEDB_PASSWORD", "poc-dev-pass")
+    arcadedb_password: str = _str("ARCADEDB_PASSWORD", "")
     embed_url: str = _str("EMBED_URL", "http://embeddings-server:8600")
     rerank_url: str = _str("RERANK_URL", "http://embeddings-server:8600")
     rerank_model: str = _str("RERANK_MODEL", "bge-reranker")
@@ -178,6 +192,28 @@ class Settings:
     def farm_stream_key(self) -> str:
         """The full key of the farm's ingress stream: ``stream:<farm_stream_id>``."""
         return f"{self.stream_prefix}{self.farm_stream_id}"
+
+    def mcp_servers(self) -> dict[str, str]:
+        """All MCP hosts as ``{server_key: url}``.
+
+        The default pair (``mcp_server_key`` -> ``mcp_url``) is always present; any
+        ``MCP_SERVERS="key=url,key2=url2"`` entries are added. A malformed entry is
+        skipped rather than breaking startup (the picker degrades, it never crashes).
+        """
+        servers = {self.mcp_server_key: self.mcp_url}
+        for part in self.mcp_servers_extra.split(","):
+            part = part.strip()
+            if not part or "=" not in part:
+                continue
+            key, _, url = part.partition("=")
+            key, url = key.strip(), url.strip()
+            if key and url:
+                servers[key] = url
+        return servers
+
+    def mcp_url_for(self, server_key: str) -> str | None:
+        """The URL of one MCP host by its key (None when unknown)."""
+        return self.mcp_servers().get(server_key)
 
 
 settings = Settings()

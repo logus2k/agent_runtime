@@ -216,23 +216,43 @@ class AdminApp {
     if (cur) sel.value = cur;
   }
 
-  async loadRuns() {
+  _runRow(r) {
+    const t = r.timestamp ? new Date(r.timestamp).toLocaleString() : "—";
+    return `<div class="run-ev">
+        <span class="muted">${this.esc(t)}</span>
+        <span class="et">${this.esc(r.event_type)}</span>
+        <span>${this.esc(r.agent_name || r.agent_uid || "")} <span class="muted small">${this.esc(this._runSummary(r))}</span></span>
+      </div>`;
+  }
+
+  // `before` = the pagination cursor. Absent → a fresh load (replace); present → append
+  // the next older page beneath what's already shown.
+  async loadRuns(before = null) {
     const out = this.$("#runs-out");
-    out.innerHTML = `<p class="muted">loading…</p>`;
+    const uid = this.$("#runs-agent").value;
+    if (!before) out.innerHTML = `<p class="muted">loading…</p>`;
     try {
-      const uid = this.$("#runs-agent").value;
-      const { runs } = await this.client.listRuns(uid, 100);
-      if (!runs.length) { out.innerHTML = `<p class="muted">no run events</p>`; return; }
-      out.innerHTML = runs.map((r) => {
-        const t = r.timestamp ? new Date(r.timestamp).toLocaleString() : "—";
-        return `<div class="run-ev">
-          <span class="muted">${this.esc(t)}</span>
-          <span class="et">${this.esc(r.event_type)}</span>
-          <span>${this.esc(r.agent_name || r.agent_uid || "")} <span class="muted small">${this.esc(this._runSummary(r))}</span></span>
-        </div>`;
-      }).join("");
+      const { runs, next_cursor } = await this.client.listRuns(uid, 100, before);
+      if (!before && !runs.length) { out.innerHTML = `<p class="muted">no run events</p>`; return; }
+      const rows = runs.map((r) => this._runRow(r)).join("");
+      const moreBtn = this.$("#runs-more-wrap");
+      if (moreBtn) moreBtn.remove();                 // drop the old button before re-adding
+      if (before) {
+        out.insertAdjacentHTML("beforeend", rows);   // append older events
+      } else {
+        out.innerHTML = rows;
+      }
+      // Only offer "Load More" when the server says an older page exists.
+      if (next_cursor) {
+        out.insertAdjacentHTML("beforeend",
+          `<div id="runs-more-wrap" style="text-align:center;margin-top:10px">
+             <button id="runs-more" class="ghost">Load more…</button>
+           </div>`);
+        this.$("#runs-more").addEventListener("click", () => this.loadRuns(next_cursor));
+      }
     } catch (e) {
-      out.innerHTML = `<p class="form-msg bad">${this.esc(this.describe(e))}</p>`;
+      if (!before) out.innerHTML = `<p class="form-msg bad">${this.esc(this.describe(e))}</p>`;
+      else this.toast(this.describe(e), "bad");
     }
   }
 

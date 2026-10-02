@@ -63,6 +63,38 @@ def build_descriptors() -> list[ResourceDescriptor]:
             ],
             columns=["name", "description"],
         ),
+        # MCP hosts. Env-declared entries are deployment defaults; operators can add more
+        # at runtime (stored as one JSON per key), which is why this is editable + deletable
+        # rather than a read-only catalogue like the tool lists below.
+        ResourceDescriptor(
+            id="mcp-server", label="MCP Server", icon="icons/connectors.svg",
+            identity="key", source="mcp_server",
+            capabilities={LIST, GET, PICK, CREATE, UPDATE, DELETE},
+            schema=[
+                {"key": "key", "control": "text", "label": "key"},
+                {"key": "url", "control": "text", "label": "url"},
+            ],
+            columns=["key", "url", "source"],
+            editable=True,
+            allow_free=True,
+        ),
+        # Single-select twin of "mcp-tool": the MCP block calls exactly ONE tool, whereas
+        # an Agent carries an allow-list of many. Same source/catalog — only the picker
+        # shape differs (multi is a descriptor-level property). Grouped by host so the
+        # dropdown reads as "server -> its tools"; free entry keeps authoring possible
+        # while a host is unreachable.
+        ResourceDescriptor(
+            id="mcp-tool-single", label="MCP Tool", icon="icons/connectors.svg",
+            identity="name", source="mcp", capabilities={LIST, PICK},
+            schema=[
+                {"key": "name", "control": "text", "label": "tool"},
+                {"key": "server", "control": "text", "label": "server"},
+                {"key": "description", "control": "textarea", "label": "description"},
+            ],
+            columns=["name", "server", "description"],
+            group_by="server",
+            allow_free=True,
+        ),
         ResourceDescriptor(
             id="skill", label="Skill", icon="icons/table.svg", identity="name",
             source="skill", capabilities={LIST, PICK}, multi=True,

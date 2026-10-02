@@ -29,6 +29,7 @@ from .blocks import (
     GraphDatabase,
     Ingestion,
     Loop,
+    MCP,
     SttInitiator,
     TTS,
     Transform,
@@ -51,6 +52,9 @@ BLOCK_TYPES: dict[str, type[Block]] = {
     # Standalone data-source blocks (§ retriever): query a vector/graph DB, emit results.
     VectorDatabase.kind: VectorDatabase,
     GraphDatabase.kind: GraphDatabase,
+    # MCP: call one tool deterministically (no LLM) — the general-purpose escape hatch
+    # for external I/O and computation inside a graph.
+    MCP.kind: MCP,
     # Ingestion: a client of the Ingestion Agent (ingestion_server).
     Ingestion.kind: Ingestion,
     # Data (JSON): emit a literal JSON object → an Agent's `vars` port (or a general flow source).

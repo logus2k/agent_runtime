@@ -283,14 +283,77 @@ async def validate_agent(body: dict, request: Request) -> dict:
 
 # --- observability -----------------------------------------------------------
 
+async def _read_runs_backward(bus, stream: str, want: int, keep, before: Optional[str]):
+    """Yield run events newest-first, honouring a ``keep(data)`` filter, until ``want``
+    have been collected or the stream is exhausted.
+
+    The previous implementation read FORWARD from ``"0"`` and kept the tail of that
+    window — so it never reached the actual newest entries and, on a bursty stream,
+    returned one old cluster (all timestamped within the same second). This reads
+    **backward from the end** (XREVRANGE), which is genuinely newest-first and pages
+    cleanly: the returned ``next_cursor`` is the oldest id seen, and a follow-up call
+    passes it as ``before`` to continue further back.
+
+    Filtering happens here rather than in the caller so that a page always returns up
+    to ``want`` *matching* events even when most of the stream belongs to other agents
+    — otherwise "Load More" would return near-empty pages.
+    """
+    from glide import ExclusiveIdBound, MaxId, MinId
+    from agent_bus_client import EventEnvelope
+
+    client = bus.client
+    end = ExclusiveIdBound(before) if before else MaxId()  # exclusive so we never repeat
+    batch = max(want * 4, 200)                              # over-read; most may be filtered out
+    out: list[dict] = []
+    oldest_id: Optional[str] = before
+    scanned = 0
+    hard_cap = 20000                                        # never unbounded, even on a huge stream
+
+    while len(out) < want and scanned < hard_cap:
+        res = await client.xrevrange(stream, end, MinId(), count=batch)
+        if not res:
+            break
+        for entry_id_b, fields in res.items():
+            entry_id = entry_id_b.decode() if isinstance(entry_id_b, (bytes, bytearray)) else entry_id_b
+            oldest_id = entry_id
+            scanned += 1
+            try:
+                env = EventEnvelope.from_fields(fields)
+            except Exception:  # noqa: BLE001 - a poison entry must not sink the whole view
+                continue
+            d = env.payload.data or {}
+            if not keep(d):
+                continue
+            out.append({
+                "cid": env.header.cid,
+                "sid": env.header.sid,
+                "event_type": env.header.event_type,
+                "timestamp": env.header.timestamp,
+                "agent_uid": d.get("agent_uid"),
+                "agent_name": d.get("agent_name"),
+                "data": d,
+            })
+            if len(out) >= want:
+                break
+        if len(res) < batch:        # reached the start of the stream
+            oldest_id = None
+            break
+        end = ExclusiveIdBound(oldest_id)
+
+    # A cursor is only meaningful if more may remain; None means "no further pages".
+    return out, (oldest_id if len(out) >= want else None)
+
+
 @router.get("/runs")
 async def list_runs(
     request: Request,
     agent_uid: Optional[str] = None,
     limit: int = Query(default=100, ge=1, le=1000),
+    before: Optional[str] = None,
 ) -> dict:
-    """Recent run events from the runs stream (newest first). Optionally filtered to one
-    agent_uid. Read-only XREAD replay — bounded scan, fine at this volume."""
+    """Recent run events from the runs stream, **newest first**. Optionally filtered to one
+    ``agent_uid``. Paginates with ``before`` (pass the previous response's ``next_cursor``
+    to fetch the next older page). Read-only XREVRANGE — bounded scan."""
     bus = _bus(request)
     stream = bus.stream_key(settings.runs_stream_id)
     # Multi-tenancy: non-admins only see runs of records they own (matched by agent_uid or
@@ -299,26 +362,16 @@ async def list_runs(
     owned = None if is_admin(p, email) else {
         r.uid for r in _graph_registry(request).all() if can_access(p, r.owner, email)
     }
-    # Read a generous window forward, then keep the newest `limit` (after filtering).
-    _, envelopes = await bus.observe(stream, "0", count=max(limit * 5, 200))
-    events: list[dict] = []
-    for env in envelopes:
-        d = env.payload.data or {}
+
+    def keep(d: dict) -> bool:
         if agent_uid and d.get("agent_uid") != agent_uid:
-            continue
+            return False
         if owned is not None and d.get("agent_uid") not in owned and d.get("record_uid") not in owned:
-            continue
-        events.append({
-            "cid": env.header.cid,
-            "sid": env.header.sid,
-            "event_type": env.header.event_type,
-            "timestamp": env.header.timestamp,
-            "agent_uid": d.get("agent_uid"),
-            "agent_name": d.get("agent_name"),
-            "data": d,
-        })
-    events.reverse()  # newest first
-    return {"runs": events[:limit]}
+            return False
+        return True
+
+    events, next_cursor = await _read_runs_backward(bus, stream, limit, keep, before)
+    return {"runs": events, "next_cursor": next_cursor}
 
 
 # --- consistency (job ↔ agent seam) ------------------------------------------
@@ -460,33 +513,58 @@ async def whatsapp_targets(request: Request) -> dict:
 
 
 async def _fetch_mcp_tools() -> dict:
-    """List the tools the decoupled mcp-service advertises, for the Agent allow-list
-    picker. Names are returned **prefixed** (``mcp__web_search``) — the same namespaced
-    vocabulary the DSL allow-list and the LLM specs use, so the picker writes back exactly
-    what lowering expects. Read-only; degrades loudly-but-gracefully (never 500s the UI)."""
-    from .mcp_client import MCPClient  # local import: keeps the module import-light
+    """List the tools EVERY configured MCP host advertises, for the grounded pickers.
 
-    key = settings.mcp_server_key
-    client = MCPClient(settings.mcp_url, server=key)
-    try:
-        raw = await client.list_tools()
-    except Exception as exc:  # noqa: BLE001 - surface the failure in the UI, don't 500
-        log.warning("mcp tools fetch failed (%s): %s", settings.mcp_url, exc)
-        return {"tools": [], "server_ok": False, "error": str(exc)}
+    Names are returned **prefixed** (``mcp__web_search``) — the same namespaced
+    vocabulary the DSL allow-list and the LLM specs use, so the picker writes back exactly
+    what lowering expects. Because the prefix IS the server key, a tool name alone
+    identifies its host (which is how the MCP block resolves where to call).
+
+    Each item also carries its ``server`` so a picker can group by host. Hosts are
+    queried independently: one unreachable host contributes its error but never hides
+    the tools of the others. Read-only; degrades loudly-but-gracefully (never 500s the UI)."""
+    from .mcp_client import MCPClient  # local import: keeps the module import-light
 
     tools: list[dict] = []
     seen: set[str] = set()
-    for t in raw:
-        name = t.get("name")
-        if not name or name in seen:  # the catalog can advertise a tool twice; keep the first
+    errors: list[str] = []
+    any_ok = False
+
+    from .mcp_servers import all_servers  # local import: keeps the module import-light
+
+    for key, url in all_servers().items():
+        client = MCPClient(url, server=key)
+        try:
+            raw = await client.list_tools()
+        except Exception as exc:  # noqa: BLE001 - surface it, but keep other hosts usable
+            log.warning("mcp tools fetch failed (%s @ %s): %s", key, url, exc)
+            errors.append(f"{key}: {exc}")
             continue
-        seen.add(name)
-        tools.append({
-            "name": f"{key}__{name}",              # namespaced (matches the allow-list)
-            "raw": name,
-            "description": t.get("description", ""),
-        })
-    return {"tools": tools, "server_ok": True, "error": None}
+        any_ok = True
+        for t in raw:
+            name = t.get("name")
+            if not name:
+                continue
+            prefixed = f"{key}__{name}"            # namespaced (matches the allow-list)
+            if prefixed in seen:  # a catalog can advertise a tool twice; keep the first
+                continue
+            seen.add(prefixed)
+            tools.append({
+                "name": prefixed,
+                "raw": name,
+                "server": key,                      # lets a picker optgroup by host
+                "description": t.get("description", ""),
+                # The tool's own parameter contract. Carried through so an editor can
+                # tell the author what to pass — otherwise picking a tool leaves them
+                # guessing at an empty argument object.
+                "input_schema": t.get("inputSchema") or {},
+            })
+
+    return {
+        "tools": tools,
+        "server_ok": any_ok,
+        "error": "; ".join(errors) if errors else None,
+    }
 
 
 @router.get("/channels/mcp/tools")
@@ -773,11 +851,31 @@ async def project_events(uid: str, request: Request) -> StreamingResponse:
     if rec is None:
         raise HTTPException(status_code=404, detail=f"no deployed record '{uid}'")
     require_access(request, rec.owner)  # multi-tenancy: only the owner may observe the trace
+
+    # Subscribe to the live hub BEFORE reading history, so an event that fires during the
+    # backfill read is queued rather than lost in the gap between the two.
     q = hub.subscribe()
+    bus = _bus(request)
+    runs_stream = bus.stream_key(settings.runs_stream_id)
 
     async def gen():
         try:
             yield ": connected\n\n"
+
+            # Backfill: the hub is live-only and in-memory (cleared on restart), so a panel
+            # opened outside a run — the common case, since scheduled runs fire unattended —
+            # would otherwise look empty or stale. Seed it with this record's recent history
+            # from the durable runs stream, oldest-first so it reads into the live tail.
+            try:
+                history, _ = await _read_runs_backward(
+                    bus, runs_stream, 200, lambda d: d.get("record_uid") == uid, None)
+                for ev in reversed(history):          # chronological
+                    frame = {"event": ev["event_type"], "cid": ev["cid"],
+                             "replay": True, **(ev["data"] or {})}
+                    yield f"data: {json.dumps(frame)}\n\n"
+            except Exception as exc:  # noqa: BLE001 - history is best-effort; live must still work
+                log.warning("trace backfill failed for %s: %s", uid, exc)
+
             while True:
                 if await request.is_disconnected():
                     break

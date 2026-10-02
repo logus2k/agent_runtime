@@ -64,10 +64,11 @@ export class AgentRuntimeClient {
   reload() { return this._request("POST", "/admin/reload"); }
 
   // observability + seam
-  listRuns(agentUid, limit = 100) {
+  listRuns(agentUid, limit = 100, before = null) {
     const q = new URLSearchParams();
     if (agentUid) q.set("agent_uid", agentUid);
     q.set("limit", String(limit));
+    if (before) q.set("before", before);      // pagination cursor from a prior response
     return this._request("GET", `/admin/runs?${q.toString()}`);
   }
   consistency() { return this._request("GET", "/admin/consistency"); }

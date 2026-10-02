@@ -1,0 +1,64 @@
+{
+  "version": "0.1",
+  "uid": "sdlc-cell-assess",
+  "name": "SDLC cell assessment",
+  "description": "The SDLC Brain's uniform assessment pipeline: collect the evidence for one cell of one project, score it against that cell's specification, and write the result. ONE record serves every project and every cell — the pair arrives in the firing payload as vars {project, cell}, so scheduling a new cell is adding a binding, not authoring a graph. Each step is a deterministic tool call; no model is in this loop.",
+  "enabled": true,
+  "entry": "trigger:1",
+  "nodes": [
+    {
+      "id": "trigger:1",
+      "kind": "initiator",
+      "config": { "type": "schedule" }
+    },
+    {
+      "id": "collect:2",
+      "kind": "mcp",
+      "config": {
+        "server": "sdlc",
+        "tool": "sdlc__sdlc_collect_evidence",
+        "arguments": { "project": "{project}", "cell": "{cell}" },
+        "result_format": "text",
+        "timeout_s": 180
+      }
+    },
+    {
+      "id": "score:3",
+      "kind": "mcp",
+      "config": {
+        "server": "sdlc",
+        "tool": "sdlc__sdlc_score_cell",
+        "arguments": {
+          "project": "{project}",
+          "cell": "{cell}",
+          "evidence": "{input}"
+        },
+        "result_format": "text",
+        "timeout_s": 120
+      }
+    },
+    {
+      "id": "write:4",
+      "kind": "mcp",
+      "config": {
+        "server": "sdlc",
+        "tool": "sdlc__sdlc_state",
+        "arguments": {
+          "project": "{project}",
+          "cell": "{cell}",
+          "op": "write",
+          "data": "{input}"
+        },
+        "result_format": "text",
+        "timeout_s": 120
+      }
+    }
+  ],
+  "edges": [
+    { "src": "trigger:1", "dst": "collect:2", "port": "out" },
+    { "src": "collect:2", "dst": "score:3", "port": "out" },
+    { "src": "score:3", "dst": "write:4", "port": "out" }
+  ],
+  "owner": "103189083840167031872",
+  "owner_email": "logus2k@gmail.com"
+}

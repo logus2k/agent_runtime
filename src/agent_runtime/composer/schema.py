@@ -130,6 +130,26 @@ class ConfigField:
     # only when ``source == "inline"``). Empty/None = always shown. Values may be a single
     # scalar or a list of accepted values.
     show_if: Optional[dict[str, Any]] = None
+    # Scope a grounded picker's items by a sibling field's value:
+    # {"field": <sibling_key>, "item": <item_field>} — the editor shows only items whose
+    # ``item`` field equals the sibling's CURRENT value (e.g. only the selected server's
+    # tools). A non-empty search in the picker OVERRIDES the scope and matches across all
+    # items, falling back to the scoped set when the search is cleared. Empty/None = no
+    # scoping (every item is offered).
+    scope_by: Optional[dict[str, Any]] = None
+    # Grounded pickers only: preselect the FIRST available item when the field has no value
+    # yet (the common case being a list with exactly one entry, where making the user choose
+    # is pure friction — and where anything scoped to this field would otherwise stay
+    # unscoped). Applied silently at render time, so it never dirties a graph on its own.
+    default_first: bool = False
+    # Grounded pickers only: when a selection is made, fill a sibling field with a
+    # skeleton derived from a JSON Schema carried on the picked item.
+    # {"field": <sibling_key>, "from": <item_field holding the schema>}.
+    # Only fills when the sibling is still empty, so an authored value is never lost.
+    fills_template: Optional[dict[str, Any]] = None
+    # Render the parameter contract of an item selected in ANOTHER field, so the author
+    # can see what to pass: {"field": <sibling_key>, "item": <item_field with the schema>}.
+    schema_hint: Optional[dict[str, Any]] = None
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -152,6 +172,14 @@ class ConfigField:
             out["max"] = self.max
         if self.show_if:
             out["show_if"] = self.show_if
+        if self.scope_by:
+            out["scope_by"] = self.scope_by
+        if self.default_first:
+            out["default_first"] = True
+        if self.fills_template:
+            out["fills_template"] = self.fills_template
+        if self.schema_hint:
+            out["schema_hint"] = self.schema_hint
         return out
 
 
